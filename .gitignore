@@ -6,8 +6,9 @@ Thumbs.db
 /build/
 
 # CMake
+/CMakeFiles
+/build.ninja
+/.mxproject
 CMakeCache.txt
 cmake_install.cmake
 compile_commands.json
-/build.ninja
-/.mxproject
