@@ -1,0 +1,6 @@
+D:/Projects/drone-toi/stm32-project/CMakeFiles/stm32-project.dir
+D:/Projects/drone-toi/stm32-project/CMakeFiles/edit_cache.dir
+D:/Projects/drone-toi/stm32-project/CMakeFiles/rebuild_cache.dir
+D:/Projects/drone-toi/stm32-project/cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir
+D:/Projects/drone-toi/stm32-project/cmake/stm32cubemx/CMakeFiles/edit_cache.dir
+D:/Projects/drone-toi/stm32-project/cmake/stm32cubemx/CMakeFiles/rebuild_cache.dir

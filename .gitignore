@@ -1,0 +1,13 @@
+# System files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+/build/
+
+# CMake
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+/build.ninja
+/.mxproject
