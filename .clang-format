@@ -5,3 +5,8 @@ UseTab: Never
 ColumnLimit: 120
 AllowShortBlocksOnASingleLine: true
 AllowShortFunctionsOnASingleLine: Empty
+BinPackParameters: false
+BinPackArguments: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowAllArgumentsOnNextLine: false
+AlignAfterOpenBracket: BlockIndent
