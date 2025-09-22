@@ -45,11 +45,15 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    Drivers/BNO055/Src/bno055.c
+    Drivers/BMP280/Src/bmp280.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
+    Drivers/BNO055/Inc
+    Drivers/BMP280/Inc
 )
 
 # Add project symbols (macros)
@@ -66,3 +70,6 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
 
     # Add user defined libraries
 )
+
+# Enable float printf
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE "-u_printf_float")
