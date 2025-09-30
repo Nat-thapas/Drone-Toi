@@ -40,13 +40,16 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define STAT_SERIAL_INTERVAL 250  // ms.
+#define STAT_SERIAL_INTERVAL 250000  // us.
 
 #define RADIO_RX_UART huart1
 #define RADIO_TELEM_UART huart2
 #define SERIAL_UART huart3
 
+#define PRECISION_TIMER_TIM htim2
 #define MOTORS_PWM_TIM htim3
+
+#define PRECISION_TIMER_COUNT htim2.Instance->CNT
 
 #define MOTOR_1_FL 1
 #define MOTOR_2_RR 2
@@ -105,27 +108,35 @@ I2C_HandleTypeDef hi2c4;
 DMA_HandleTypeDef hdma_i2c1_rx;
 DMA_HandleTypeDef hdma_i2c1_tx;
 
+TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
+UART_HandleTypeDef huart6;
 DMA_HandleTypeDef hdma_usart1_rx;
 DMA_HandleTypeDef hdma_usart2_rx;
 DMA_HandleTypeDef hdma_usart2_tx;
 DMA_HandleTypeDef hdma_usart3_tx;
+DMA_HandleTypeDef hdma_usart6_rx;
+DMA_HandleTypeDef hdma_usart6_tx;
 
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 
-uint32_t statSerial_lastTransmission = 0;
-uint16_t statSerial_IterCount = 0;
+volatile uint32_t precisionTimer_acc_us = 0;
+
+uint32_t telemetry_lastTransmission_us = 0;
+int_fast16_t telemetry_iterCount = 0;
 
 volatile uint8_t radio_rxBuffer[32] = {};
-volatile uint16_t radio_rxValues[10] = {};
+volatile int_fast16_t radio_rxValues[10] = {};
 
 volatile uint32_t batt_adcRawValue = 0;
+
+uint32_t lastLoopTime_us = 0;
 
 BMP280_HandleTypedef bmp280;
 
@@ -145,12 +156,18 @@ static void MX_I2C4_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_USART6_UART_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+uint32_t GetTickPrecise() {
+  return precisionTimer_acc_us + PRECISION_TIMER_COUNT;
+}
 
 void UART_Transmit_DMA(UART_HandleTypeDef *huart, char *str) {
   HAL_UART_Transmit_DMA(huart, (uint8_t *)str, strlen(str));
@@ -202,6 +219,11 @@ int main(void) {
 
   /* USER CODE END 1 */
 
+  /* Enable the CPU Cache */
+
+  /* Enable I-Cache---------------------------------------------------------*/
+  SCB_EnableICache();
+
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
@@ -231,9 +253,12 @@ int main(void) {
   MX_TIM3_Init();
   MX_ADC1_Init();
   MX_USART2_UART_Init();
+  MX_USART6_UART_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_UART_Receive_DMA(&RADIO_RX_UART, radio_rxBuffer, 32);
+  HAL_TIM_Base_Start(&PRECISION_TIMER_TIM);
   HAL_TIM_PWM_Start(&MOTORS_PWM_TIM, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&MOTORS_PWM_TIM, TIM_CHANNEL_2);
   HAL_TIM_PWM_Start(&MOTORS_PWM_TIM, TIM_CHANNEL_3);
@@ -264,21 +289,23 @@ int main(void) {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    uint32_t currentTick = HAL_GetTick();
+    uint32_t currentTick_us = GetTickPrecise();
+    uint32_t deltaTime_us = currentTick_us - lastLoopTime_us;
+
     bno055_vector_t vector = bno055_getVectorEuler();
     float heading = vector.x;
     float roll = vector.y;
     float pitch = vector.z;
 
-    float temperature, pressure, humidity;
+    float temperature, pressure, humidity;  // humidity only for BME280
     bmp280_read_float(&bmp280, &temperature, &pressure, &humidity);
 
-    uint16_t basePower = radio_rxValues[2];  // Channel 3 = left joystick vertical
+    int_fast16_t basePower = radio_rxValues[2];  // Channel 3 = left joystick vertical
 
-    uint16_t motor1Power = basePower;
-    uint16_t motor2Power = basePower;
-    uint16_t motor3Power = basePower;
-    uint16_t motor4Power = basePower;
+    int_fast16_t motor1Power = basePower;
+    int_fast16_t motor2Power = basePower;
+    int_fast16_t motor3Power = basePower;
+    int_fast16_t motor4Power = basePower;
 
     // TODO: Do PID and stuff here
 
@@ -287,9 +314,9 @@ int main(void) {
     MOTORS_SetPWM(MOTOR_3_FR, basePower);
     MOTORS_SetPWM(MOTOR_4_RL, basePower);
 
-    statSerial_IterCount++;
+    telemetry_iterCount++;
 
-    if (currentTick - statSerial_lastTransmission > STAT_SERIAL_INTERVAL) {
+    if (currentTick_us - telemetry_lastTransmission_us > STAT_SERIAL_INTERVAL) {
       UART_Transmitf_DMA(
           &SERIAL_UART,
           "--------------------------------------------------------------------------------\r\n"
@@ -319,11 +346,13 @@ int main(void) {
           motor3Power,
           motor4Power,
           batt_adcRawValue * BATT_VOLTAGE_SCALE / 0xFFF,
-          statSerial_IterCount * 1000 / STAT_SERIAL_INTERVAL
+          telemetry_iterCount * 1000 / STAT_SERIAL_INTERVAL
       );
-      statSerial_lastTransmission = currentTick;
-      statSerial_IterCount = 0;
+      telemetry_lastTransmission_us = currentTick_us;
+      telemetry_iterCount = 0;
     }
+
+    lastLoopTime_us = currentTick_us;
   }
   /* USER CODE END 3 */
 }
@@ -569,6 +598,39 @@ static void MX_I2C4_Init(void) {
 }
 
 /**
+ * @brief TIM2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM2_Init(void) {
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 108 - 1;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 1000000 - 1;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK) { Error_Handler(); }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK) { Error_Handler(); }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK) { Error_Handler(); }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+}
+
+/**
  * @brief TIM3 Initialization Function
  * @param None
  * @retval None
@@ -586,9 +648,9 @@ static void MX_TIM3_Init(void) {
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 108;
+  htim3.Init.Prescaler = 108 - 1;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 2500;
+  htim3.Init.Period = 2500 - 1;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim3) != HAL_OK) { Error_Handler(); }
@@ -700,6 +762,35 @@ static void MX_USART3_UART_Init(void) {
 }
 
 /**
+ * @brief USART6 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_USART6_UART_Init(void) {
+  /* USER CODE BEGIN USART6_Init 0 */
+
+  /* USER CODE END USART6_Init 0 */
+
+  /* USER CODE BEGIN USART6_Init 1 */
+
+  /* USER CODE END USART6_Init 1 */
+  huart6.Instance = USART6;
+  huart6.Init.BaudRate = 115200;
+  huart6.Init.WordLength = UART_WORDLENGTH_8B;
+  huart6.Init.StopBits = UART_STOPBITS_1;
+  huart6.Init.Parity = UART_PARITY_NONE;
+  huart6.Init.Mode = UART_MODE_TX_RX;
+  huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart6.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart6.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart6.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart6) != HAL_OK) { Error_Handler(); }
+  /* USER CODE BEGIN USART6_Init 2 */
+
+  /* USER CODE END USART6_Init 2 */
+}
+
+/**
  * @brief USB_OTG_FS Initialization Function
  * @param None
  * @retval None
@@ -738,26 +829,32 @@ static void MX_DMA_Init(void) {
 
   /* DMA interrupt init */
   /* DMA1_Stream0_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
   /* DMA1_Stream3_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
   /* DMA1_Stream5_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
   /* DMA1_Stream6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
   /* DMA1_Stream7_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Stream7_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Stream7_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream7_IRQn);
   /* DMA2_Stream0_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+  /* DMA2_Stream1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn);
   /* DMA2_Stream2_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
+  /* DMA2_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream6_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream6_IRQn);
 }
 
 /**
@@ -781,19 +878,19 @@ static void MX_GPIO_Init(void) {
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LD1_Pin | LD3_Pin | LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, LED_Green_Pin | LED_Red_Pin | LED_Blue_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : USER_Btn_Pin */
-  GPIO_InitStruct.Pin = USER_Btn_Pin;
+  /*Configure GPIO pin : BTN_B1_Pin */
+  GPIO_InitStruct.Pin = BTN_B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(USER_Btn_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(BTN_B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : LD1_Pin LD3_Pin LD2_Pin */
-  GPIO_InitStruct.Pin = LD1_Pin | LD3_Pin | LD2_Pin;
+  /*Configure GPIO pins : LED_Green_Pin LED_Red_Pin LED_Blue_Pin */
+  GPIO_InitStruct.Pin = LED_Green_Pin | LED_Red_Pin | LED_Blue_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -819,6 +916,10 @@ static void MX_GPIO_Init(void) {
 
 /* USER CODE BEGIN 4 */
 
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+  if (htim == &PRECISION_TIMER_TIM) { precisionTimer_acc_us += 1000000; }
+}
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart == &RADIO_RX_UART) {
     uint16_t checksum = 0;
@@ -832,8 +933,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         radio_rxValues[channel] = value;
       }
       // UART_Transmit_DMA(&SERIAL_UART, "Received and processed valid radio packet");
-      HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
-      HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
     } else {
       // UART_Transmitf_DMA(
       //     &SERIAL_UART,
@@ -842,8 +943,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
       //     radio_rxBuffer[0],
       //     radio_rxBuffer[1]
       // );
-      HAL_GPIO_WritePin(LD1_GPIO_Port, LD1_Pin, GPIO_PIN_RESET);
-      HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
+      HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, GPIO_PIN_RESET);
+      HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
     }
     HAL_UART_Receive_DMA(&RADIO_RX_UART, radio_rxBuffer, 32);
   }
@@ -859,7 +960,15 @@ void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
-  while (1) {}
+  HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_RESET);
+  while (1) {
+    HAL_GPIO_TogglePin(LED_Red_GPIO_Port, LED_Red_Pin);
+    HAL_GPIO_TogglePin(LED_Green_GPIO_Port, LED_Green_Pin);
+    HAL_GPIO_TogglePin(LED_Blue_GPIO_Port, LED_Blue_Pin);
+    HAL_Delay(250);
+  }
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT

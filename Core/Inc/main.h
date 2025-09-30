@@ -59,8 +59,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define USER_Btn_Pin GPIO_PIN_13
-#define USER_Btn_GPIO_Port GPIOC
+#define BTN_B1_Pin GPIO_PIN_13
+#define BTN_B1_GPIO_Port GPIOC
 #define ALT_SDA_Pin GPIO_PIN_0
 #define ALT_SDA_GPIO_Port GPIOF
 #define ALT_SCL_Pin GPIO_PIN_1
@@ -83,18 +83,18 @@ void Error_Handler(void);
 #define RMII_RXD0_GPIO_Port GPIOC
 #define RMII_RXD1_Pin GPIO_PIN_5
 #define RMII_RXD1_GPIO_Port GPIOC
-#define LD1_Pin GPIO_PIN_0
-#define LD1_GPIO_Port GPIOB
+#define LED_Green_Pin GPIO_PIN_0
+#define LED_Green_GPIO_Port GPIOB
 #define MOTOR_2_RR_Pin GPIO_PIN_1
 #define MOTOR_2_RR_GPIO_Port GPIOB
-#define I2C4_SCL_Pin GPIO_PIN_14
-#define I2C4_SCL_GPIO_Port GPIOF
-#define I2C4_SDA_Pin GPIO_PIN_15
-#define I2C4_SDA_GPIO_Port GPIOF
+#define ToF_SCL_Pin GPIO_PIN_14
+#define ToF_SCL_GPIO_Port GPIOF
+#define ToF_SDA_Pin GPIO_PIN_15
+#define ToF_SDA_GPIO_Port GPIOF
 #define RMII_TXD1_Pin GPIO_PIN_13
 #define RMII_TXD1_GPIO_Port GPIOB
-#define LD3_Pin GPIO_PIN_14
-#define LD3_GPIO_Port GPIOB
+#define LED_Red_Pin GPIO_PIN_14
+#define LED_Red_GPIO_Port GPIOB
 #define STLK_RX_Pin GPIO_PIN_8
 #define STLK_RX_GPIO_Port GPIOD
 #define STLK_TX_Pin GPIO_PIN_9
@@ -103,6 +103,8 @@ void Error_Handler(void);
 #define USB_PowerSwitchOn_GPIO_Port GPIOG
 #define USB_OverCurrent_Pin GPIO_PIN_7
 #define USB_OverCurrent_GPIO_Port GPIOG
+#define WLSER_TX_Pin GPIO_PIN_6
+#define WLSER_TX_GPIO_Port GPIOC
 #define MOTOR_3_FR_Pin GPIO_PIN_7
 #define MOTOR_3_FR_GPIO_Port GPIOC
 #define MOTOR_4_RL_Pin GPIO_PIN_8
@@ -123,6 +125,8 @@ void Error_Handler(void);
 #define TCK_GPIO_Port GPIOA
 #define RADIO_Telemetry_Pin GPIO_PIN_5
 #define RADIO_Telemetry_GPIO_Port GPIOD
+#define WLSER_RX_Pin GPIO_PIN_9
+#define WLSER_RX_GPIO_Port GPIOG
 #define RMII_TX_EN_Pin GPIO_PIN_11
 #define RMII_TX_EN_GPIO_Port GPIOG
 #define RMII_TXD0_Pin GPIO_PIN_13
@@ -131,8 +135,8 @@ void Error_Handler(void);
 #define SWO_GPIO_Port GPIOB
 #define RADIO_RX_Pin GPIO_PIN_6
 #define RADIO_RX_GPIO_Port GPIOB
-#define LD2_Pin GPIO_PIN_7
-#define LD2_GPIO_Port GPIOB
+#define LED_Blue_Pin GPIO_PIN_7
+#define LED_Blue_GPIO_Port GPIOB
 #define IMU_SCL_Pin GPIO_PIN_8
 #define IMU_SCL_GPIO_Port GPIOB
 #define IMU_SDA_Pin GPIO_PIN_9
