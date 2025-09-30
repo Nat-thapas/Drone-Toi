@@ -2,6 +2,8 @@
   "files.associations": {
     "*.dbclient-js": "javascript",
     "main.h": "c",
-    "bno055.h": "c"
+    "bno055.h": "c",
+    "cmath": "c",
+    "cstdlib": "c"
   }
 }

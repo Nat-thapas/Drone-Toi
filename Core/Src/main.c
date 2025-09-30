@@ -29,6 +29,7 @@
 #include "bno055_stm32.h"
 #include "stdarg.h"
 #include "stdio.h"
+#include "stdlib.h"
 
 /* USER CODE END Includes */
 
@@ -67,6 +68,8 @@
 #define IMU_I2C hi2c1
 #define ALT_I2C hi2c2
 #define TOF_I2C hi2c3
+
+#define TARGET_ANGLE_LIMIT 5.0f  // degrees
 
 /* USER CODE END PD */
 
@@ -126,15 +129,15 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 
-volatile uint32_t precisionTimer_acc_us = 0;
+uint32_t precisionTimer_acc_us = 0;
 
 uint32_t telemetry_lastTransmission_us = 0;
 int_fast16_t telemetry_iterCount = 0;
 
-volatile uint8_t radio_rxBuffer[32] = {};
-volatile int_fast16_t radio_rxValues[10] = {};
+uint8_t radio_rxBuffer[32] = {};
+int_fast16_t radio_rxValues[10] = {};
 
-volatile uint32_t batt_adcRawValue = 0;
+uint32_t batt_adcRawValue = 0;
 
 uint32_t lastLoopTime_us = 0;
 
@@ -188,7 +191,10 @@ void UART_Transmitln_DMA(UART_HandleTypeDef *huart, char *str) {
   UART_Transmitf_DMA(huart, "%s\r\n", str);
 }
 
-void MOTORS_SetPWM(uint8_t motorId, uint16_t value) {
+void MOTORS_SetPower(uint8_t motorId, int_fast16_t power) {
+  if (power < 0) power = 0;
+  if (power > 1000) power = 1000;
+  uint16_t value = power + 1000;
   switch (motorId) {
     case MOTOR_1_FL:
       MOTOR_1_FL_PWM_CCR = value;
@@ -300,19 +306,30 @@ int main(void) {
     float temperature, pressure, humidity;  // humidity only for BME280
     bmp280_read_float(&bmp280, &temperature, &pressure, &humidity);
 
-    int_fast16_t basePower = radio_rxValues[2];  // Channel 3 = left joystick vertical
-
+    // Power range is 0 - 1000
+    int_fast16_t basePower = radio_rxValues[2] - 1000;  // Channel 3 = left joystick vertical
     int_fast16_t motor1Power = basePower;
     int_fast16_t motor2Power = basePower;
     int_fast16_t motor3Power = basePower;
     int_fast16_t motor4Power = basePower;
 
+    int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
+    if (abs(rollCommand) < 50) rollCommand = 0;
+    float targetRoll = rollCommand * TARGET_ANGLE_LIMIT / 500.0f;
+
+    int_fast16_t pitchCommand = radio_rxValues[1] - 1500;  // Channel 2 = right joystick vertical
+    if (abs(pitchCommand) < 50) pitchCommand = 0;
+    float targetPitch = pitchCommand * TARGET_ANGLE_LIMIT / 500.0f;
+
+    float rollError = targetRoll - roll;
+    float pitchError = targetPitch - pitch;
+
     // TODO: Do PID and stuff here
 
-    MOTORS_SetPWM(MOTOR_1_FL, basePower);
-    MOTORS_SetPWM(MOTOR_2_RR, basePower);
-    MOTORS_SetPWM(MOTOR_3_FR, basePower);
-    MOTORS_SetPWM(MOTOR_4_RL, basePower);
+    MOTORS_SetPower(MOTOR_1_FL, basePower);
+    MOTORS_SetPower(MOTOR_2_RR, basePower);
+    MOTORS_SetPower(MOTOR_3_FR, basePower);
+    MOTORS_SetPower(MOTOR_4_RL, basePower);
 
     telemetry_iterCount++;
 
@@ -321,6 +338,7 @@ int main(void) {
           &SERIAL_UART,
           "--------------------------------------------------------------------------------\r\n"
           "Radio values: %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d\r\n"
+          "Target angles: Roll = %.2f, Pitch = %.2f\r\n"
           "Orientation: Heading = %.2f, Roll = %.2f, Pitch = %.2f\r\n"
           "Atmosphere: Temperature = %.2f C, Pressure = %.2f Pa\r\n"
           "Final power motors: %04d, %04d, %04d, %04d\r\n"
@@ -336,6 +354,8 @@ int main(void) {
           radio_rxValues[7],
           radio_rxValues[8],
           radio_rxValues[9],
+          targetRoll,
+          targetPitch,
           heading,
           roll,
           pitch,
@@ -503,7 +523,7 @@ static void MX_I2C1_Init(void) {
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x6000030D;
+  hi2c1.Init.Timing = 0x20404768;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -539,7 +559,7 @@ static void MX_I2C2_Init(void) {
 
   /* USER CODE END I2C2_Init 1 */
   hi2c2.Instance = I2C2;
-  hi2c2.Init.Timing = 0x6000030D;
+  hi2c2.Init.Timing = 0x20404768;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
