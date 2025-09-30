@@ -46,6 +46,7 @@
 #define RADIO_RX_UART huart1
 #define RADIO_TELEM_UART huart2
 #define SERIAL_UART huart3
+#define WLSER_UART huart6
 
 #define PRECISION_TIMER_TIM htim2
 #define MOTORS_PWM_TIM htim3
@@ -337,8 +338,9 @@ int main(void) {
     telemetry_iterCount++;
 
     if (currentTick_us - telemetry_lastTransmission_us > STAT_SERIAL_INTERVAL) {
-      UART_Transmitf_DMA(
-          &SERIAL_UART,
+      char buffer[2048];
+      sprintf(
+          buffer,
           "--------------------------------------------------------------------------------\r\n"
           "Radio values: %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d\r\n"
           "Target angles: Roll = %.2f, Pitch = %.2f\r\n"
@@ -371,6 +373,11 @@ int main(void) {
           batt_adcRawValue * BATT_VOLTAGE_SCALE / 0xFFF,
           telemetry_iterCount * 1000 / STAT_SERIAL_INTERVAL
       );
+
+      size_t len = strlen(buffer);
+      HAL_UART_Transmit_DMA(&SERIAL_UART, (uint8_t *)buffer, len);
+      HAL_UART_Transmit_DMA(&WLSER_UART, (uint8_t *)buffer, len);
+
       telemetry_lastTransmission_us = currentTick_us;
       telemetry_iterCount = 0;
     }
