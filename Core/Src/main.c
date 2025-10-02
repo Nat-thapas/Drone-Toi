@@ -67,9 +67,9 @@
 #define RADIO_DEADZONE 25
 
 // Gain units are roughly in % power increase/decrease per degree error
-#define PID_PROPORTIONAL_GAIN 1.f
+// #define PID_PROPORTIONAL_GAIN 0.5f
 #define PID_INTEGRAL_GAIN 0.f
-#define PID_DERIVATIVE_GAIN 0.f
+// #define PID_DERIVATIVE_GAIN 0.f
 
 #define I2C_PERIPHERAL_INIT_RETRY_LIMIT 5
 
@@ -84,7 +84,7 @@
 #define MOTOR_4_RL_PWM_CCR htim3.Instance->CCR3
 
 #define BATT_SENSOR_ADC hadc1
-#define BATT_VOLTAGE_SCALE 3.3f
+#define BATT_VOLTAGE_SCALE 19.03846f
 
 /* USER CODE END PD */
 
@@ -152,14 +152,28 @@ int_fast32_t precisionTimer_acc_us = 0;
 int_fast16_t radio_consecutiveErrors = 0;
 
 int_fast32_t telemetry_lastTransmission_us = 0;
-int_fast16_t telemetry_iterCount = 0;
+int_fast32_t telemetry_iterCount = 0;
+const char telemetry_format[] =
+    "--------------------------------------------------------------------------------\r\n"
+    "Radio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
+    "Offsets     : %2.2fR %2.2fP\r\n"
+    "PID Gains   : %1.3fP %1.3fI %1.3fD\r\n"
+    "Target      : %4.2fY %4.2fR %4.2fP\r\n"
+    "Orientation : %4.2fH %4.2fR %4.2fP\r\n"
+    "Errors      : %2.4fR %2.4fP\r\n"
+    "Corrections : %1.5fY %1.5fR %1.5fP %1.5fCos \r\n"
+    "Atmos       : %.2fC, %.2fPa\r\n"
+    "Powers      : %3.1f%% %3.1f%%\r\n"
+    "              %3.1f%% %3.1f%%\r\n"
+    "Batt        : %.2f V\r\n"
+    "It/s        : %d\r\n";
 
 uint8_t radio_rxBuffer[32] = {};
 int_fast16_t radio_rxValues[10] = {
+    1500,
+    1500,
     1000,
-    1000,
-    1000,
-    1000,
+    1500,
     1000,
     1000,
     1000,
@@ -312,14 +326,14 @@ int main(void) {
   HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_SET);
 
   HAL_UART_Receive_DMA(&RADIO_RX_UART, radio_rxBuffer, 32);
-  HAL_TIM_Base_Start(&PRECISION_TIMER_TIM);
+  HAL_TIM_Base_Start_IT(&PRECISION_TIMER_TIM);
   HAL_TIM_PWM_Start(&MOTORS_PWM_TIM, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&MOTORS_PWM_TIM, TIM_CHANNEL_2);
   HAL_TIM_PWM_Start(&MOTORS_PWM_TIM, TIM_CHANNEL_3);
   HAL_TIM_PWM_Start(&MOTORS_PWM_TIM, TIM_CHANNEL_4);
   HAL_ADC_Start_DMA(&BATT_SENSOR_ADC, &batt_adcRawValue, 1);
 
-  HAL_Delay(1000);
+  HAL_Delay(250);
 
   int_fast8_t retry = 0;
 
@@ -381,132 +395,261 @@ int main(void) {
     int_fast32_t deltaTime_us = currentTick_us - pid_lastLoopTime_us;
 
     bno055_vector_t vector = bno055_getVectorEuler();
-    float heading = vector.x;
-    float roll = vector.y;
-    float pitch = vector.z;
 
     float temperature, pressure, humidity;  // humidity only for BME280
     bmp280_read_float(&bmp280, &temperature, &pressure, &humidity);
 
     float targetAngleLimit = radio_targetAngleLimits[radio_parseTriStateSwitch(radio_rxValues[8])];
 
-    float basePower = (float)(radio_rxValues[2] - 1000) / 1000;  // Channel 3 = left joystick vertical
+    // float pitchOffset = (radio_rxValues[4] - 1500.f) / 100.f;
+    // float rollOffset = (radio_rxValues[5] - 1500.f) / 100.f;
+    const float pitchOffset = -1.f;
+    const float rollOffset = -0.6f;
 
-    int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
-    if (rollCommand > -RADIO_DEADZONE && rollCommand < RADIO_DEADZONE) rollCommand = 0;
-    float targetRoll = rollCommand * targetAngleLimit / 500.f;
+    float heading = vector.x;
+    float roll = -vector.z + rollOffset;
+    float pitch = vector.y - pitchOffset;
 
-    int_fast16_t pitchCommand = 1500 - radio_rxValues[1];  // Channel 2 = right joystick vertical
-    if (pitchCommand > -RADIO_DEADZONE && pitchCommand < RADIO_DEADZONE) pitchCommand = 0;
-    float targetPitch = pitchCommand * targetAngleLimit / 500.f;
+    // float proportionalGain = (radio_rxValues[4] - 1000.f) / 1000.f;
+    // float derivativeGain = (radio_rxValues[5] - 1000.f) / 1000.f;
+    const float proportionalGain = 0.3f;
+    const float integralGain = 0.f;
+    const float derivativeGain = 0.f;
 
-    int_fast16_t yawCommand = radio_rxValues[3] - 1500;  // Channel 4 = left joystick horizontal
-    if (yawCommand > -RADIO_DEADZONE && yawCommand < RADIO_DEADZONE) yawCommand = 0;
-    float yaw = yawCommand * targetAngleLimit / 50000.f;
+    int_fast16_t altCommand = radio_rxValues[2] - 1000;
+    if (altCommand < RADIO_DEADZONE) {
+      pid_lastRollError = NAN;
+      pid_lastPitchError = NAN;
+      pid_cumulativeRollError = 0.f;
+      pid_cumulativePitchError = 0.f;
 
-    float delta = deltaTime_us / 1000000.f;
-    if (isnanf(delta) || isinff(delta)) { delta = FLT_MIN; }
+      motors_SetPower(MOTOR_1_FL, 0.f);
+      motors_SetPower(MOTOR_2_RR, 0.f);
+      motors_SetPower(MOTOR_3_FR, 0.f);
+      motors_SetPower(MOTOR_4_RL, 0.f);
 
-    float rollError = targetRoll - roll;
-    float pitchError = targetPitch - pitch;
+      if (currentTick_us - telemetry_lastTransmission_us > TELEMETRY_INTERVAL) {
+        char buffer[2048];
+        sprintf(
+            buffer,
+            telemetry_format,
+            radio_rxValues[0],
+            radio_rxValues[1],
+            radio_rxValues[2],
+            radio_rxValues[3],
+            radio_rxValues[4],
+            radio_rxValues[5],
+            radio_rxValues[6],
+            radio_rxValues[7],
+            radio_rxValues[8],
+            radio_rxValues[9],
+            rollOffset,
+            pitchOffset,
+            proportionalGain,
+            integralGain,
+            derivativeGain,
+            0.f,
+            0.f,
+            0.f,
+            heading,
+            roll,
+            pitch,
+            0.f,
+            0.f,
+            0.f,
+            0.f,
+            0.f,
+            0.f,
+            temperature,
+            pressure,
+            0.f,
+            0.f,
+            0.f,
+            0.f,
+            batt_adcRawValue * BATT_VOLTAGE_SCALE / 0xFFF,
+            telemetry_iterCount * 1000000 / TELEMETRY_INTERVAL
+        );
 
-    pid_cumulativeRollError += rollError;
-    pid_cumulativePitchError += pitchError;
+        size_t len = strlen(buffer);
+        HAL_UART_Transmit_DMA(&SERIAL_UART, (uint8_t *)buffer, len);
+        HAL_UART_Transmit_DMA(&WLSER_UART, (uint8_t *)buffer, len);
+        telemetry_lastTransmission_us = currentTick_us;
+        telemetry_iterCount = 0;
+      }
+    } else if (altCommand > 1000 - RADIO_DEADZONE) {
+      pid_lastRollError = NAN;
+      pid_lastPitchError = NAN;
+      pid_cumulativeRollError = 0.f;
+      pid_cumulativePitchError = 0.f;
 
-    float cumulativeRollError = pid_cumulativeRollError;
-    float cumulativePitchError = pid_cumulativePitchError;
+      motors_SetPower(MOTOR_1_FL, 1.f);
+      motors_SetPower(MOTOR_2_RR, 1.f);
+      motors_SetPower(MOTOR_3_FR, 1.f);
+      motors_SetPower(MOTOR_4_RL, 1.f);
 
-    float deltaRollError = (rollError - pid_lastRollError) / delta;
-    float deltaPitchError = (pitchError - pid_lastPitchError) / delta;
-    if (isnanf(deltaRollError) || isinff(deltaRollError)) { deltaRollError = 0.f; }
-    if (isnanf(deltaPitchError) || isinff(deltaPitchError)) { deltaPitchError = 0.f; }
+      if (currentTick_us - telemetry_lastTransmission_us > TELEMETRY_INTERVAL) {
+        char buffer[2048];
+        sprintf(
+            buffer,
+            telemetry_format,
+            radio_rxValues[0],
+            radio_rxValues[1],
+            radio_rxValues[2],
+            radio_rxValues[3],
+            radio_rxValues[4],
+            radio_rxValues[5],
+            radio_rxValues[6],
+            radio_rxValues[7],
+            radio_rxValues[8],
+            radio_rxValues[9],
+            rollOffset,
+            pitchOffset,
+            proportionalGain,
+            integralGain,
+            derivativeGain,
+            0.f,
+            0.f,
+            0.f,
+            heading,
+            roll,
+            pitch,
+            0.f,
+            0.f,
+            0.f,
+            0.f,
+            0.f,
+            0.f,
+            temperature,
+            pressure,
+            100.f,
+            100.f,
+            100.f,
+            100.f,
+            batt_adcRawValue * BATT_VOLTAGE_SCALE / 0xFFF,
+            telemetry_iterCount * 1000000 / TELEMETRY_INTERVAL
+        );
 
-    float proportionalRollCorrection = rollError * PID_PROPORTIONAL_GAIN / 100.f;
-    float proportionalPitchCorrection = pitchError * PID_PROPORTIONAL_GAIN / 100.f;
-    float integralRollCorrection = cumulativeRollError * PID_INTEGRAL_GAIN / 100.f;
-    float integralPitchCorrection = cumulativePitchError * PID_INTEGRAL_GAIN / 100.f;
-    float derivativeRollCorrection = deltaRollError * PID_DERIVATIVE_GAIN / 100.f;
-    float derivativePitchCorrection = deltaPitchError * PID_DERIVATIVE_GAIN / 100.f;
+        size_t len = strlen(buffer);
+        HAL_UART_Transmit_DMA(&SERIAL_UART, (uint8_t *)buffer, len);
+        HAL_UART_Transmit_DMA(&WLSER_UART, (uint8_t *)buffer, len);
+        telemetry_lastTransmission_us = currentTick_us;
+        telemetry_iterCount = 0;
+      }
+    } else {
+      float basePower = altCommand / 1000.f;  // Channel 3 = left joystick vertical
 
-    float rollCorrection = proportionalRollCorrection + integralRollCorrection + derivativeRollCorrection;
-    float pitchCorrection = proportionalPitchCorrection + integralPitchCorrection + derivativePitchCorrection;
+      int_fast16_t rollCommand = 1500 - radio_rxValues[0];  // Channel 1 = right joystick horizontal
+      if (rollCommand > -RADIO_DEADZONE && rollCommand < RADIO_DEADZONE) rollCommand = 0;
+      float targetRoll = rollCommand * targetAngleLimit / 500.f;
 
-    float cosineLossCorrection = 1.f / (cosf(roll / 180.f * M_PI) * cosf(pitch / 180.f * M_PI));
-    if (isnanf(cosineLossCorrection) || isinff(cosineLossCorrection)) { cosineLossCorrection = 1.f; }
+      int_fast16_t pitchCommand = radio_rxValues[1] - 1500;  // Channel 2 = right joystick vertical
+      if (pitchCommand > -RADIO_DEADZONE && pitchCommand < RADIO_DEADZONE) pitchCommand = 0;
+      float targetPitch = pitchCommand * targetAngleLimit / 500.f;
 
-    float motor1Power_FL = basePower * cosineLossCorrection + rollCorrection - pitchCorrection + yaw;
-    float motor2Power_RR = basePower * cosineLossCorrection - rollCorrection + pitchCorrection + yaw;
-    float motor3Power_FR = basePower * cosineLossCorrection - rollCorrection - pitchCorrection - yaw;
-    float motor4Power_RL = basePower * cosineLossCorrection + rollCorrection + pitchCorrection - yaw;
+      int_fast16_t yawCommand = radio_rxValues[3] - 1500;  // Channel 4 = left joystick horizontal
+      if (yawCommand > -RADIO_DEADZONE && yawCommand < RADIO_DEADZONE) yawCommand = 0;
+      float yaw = yawCommand * targetAngleLimit / 50000.f;
 
-    pid_lastRollError = rollError;
-    pid_lastPitchError = pitchError;
+      float delta = deltaTime_us / 1000000.f;
 
-    motors_SetPower(MOTOR_1_FL, motor1Power_FL);
-    motors_SetPower(MOTOR_2_RR, motor2Power_RR);
-    motors_SetPower(MOTOR_3_FR, motor3Power_FR);
-    motors_SetPower(MOTOR_4_RL, motor4Power_RL);
+      float rollError = targetRoll - roll;
+      float pitchError = targetPitch - pitch;
+
+      pid_cumulativeRollError += rollError;
+      pid_cumulativePitchError += pitchError;
+
+      float cumulativeRollError = pid_cumulativeRollError;
+      float cumulativePitchError = pid_cumulativePitchError;
+
+      float deltaRollError = (rollError - pid_lastRollError) / delta;
+      float deltaPitchError = (pitchError - pid_lastPitchError) / delta;
+      if (isnanf(deltaRollError) || isinff(deltaRollError)) { deltaRollError = 0.f; }
+      if (isnanf(deltaPitchError) || isinff(deltaPitchError)) { deltaPitchError = 0.f; }
+
+      float proportionalRollCorrection = rollError * proportionalGain / 100.f;
+      float proportionalPitchCorrection = pitchError * proportionalGain / 100.f;
+      float integralRollCorrection = cumulativeRollError * PID_INTEGRAL_GAIN / 100.f;
+      float integralPitchCorrection = cumulativePitchError * PID_INTEGRAL_GAIN / 100.f;
+      float derivativeRollCorrection = deltaRollError * derivativeGain / 100.f;
+      float derivativePitchCorrection = deltaPitchError * derivativeGain / 100.f;
+
+      float rollCorrection = proportionalRollCorrection + integralRollCorrection + derivativeRollCorrection;
+      float pitchCorrection = proportionalPitchCorrection + integralPitchCorrection + derivativePitchCorrection;
+
+      float cosineLossCorrection = 1.f / (cosf(roll / 180.f * M_PI) * cosf(pitch / 180.f * M_PI));
+      if (isnanf(cosineLossCorrection) || isinff(cosineLossCorrection)) { cosineLossCorrection = 1.f; }
+
+      float motor1Power_FL = basePower * cosineLossCorrection - rollCorrection - pitchCorrection + yaw;
+      float motor2Power_RR = basePower * cosineLossCorrection + rollCorrection + pitchCorrection + yaw;
+      float motor3Power_FR = basePower * cosineLossCorrection + rollCorrection - pitchCorrection - yaw;
+      float motor4Power_RL = basePower * cosineLossCorrection - rollCorrection + pitchCorrection - yaw;
+
+      pid_lastRollError = rollError;
+      pid_lastPitchError = pitchError;
+
+      motors_SetPower(MOTOR_1_FL, motor1Power_FL);
+      motors_SetPower(MOTOR_2_RR, motor2Power_RR);
+      motors_SetPower(MOTOR_3_FR, motor3Power_FR);
+      motors_SetPower(MOTOR_4_RL, motor4Power_RL);
+
+      if (currentTick_us - telemetry_lastTransmission_us > TELEMETRY_INTERVAL) {
+        char buffer[2048];
+        sprintf(
+            buffer,
+            telemetry_format,
+            radio_rxValues[0],
+            radio_rxValues[1],
+            radio_rxValues[2],
+            radio_rxValues[3],
+            radio_rxValues[4],
+            radio_rxValues[5],
+            radio_rxValues[6],
+            radio_rxValues[7],
+            radio_rxValues[8],
+            radio_rxValues[9],
+            rollOffset,
+            pitchOffset,
+            proportionalGain,
+            integralGain,
+            derivativeGain,
+            yaw,
+            targetRoll,
+            targetPitch,
+            heading,
+            roll,
+            pitch,
+            rollError,
+            pitchError,
+            yaw,
+            rollCorrection,
+            pitchCorrection,
+            cosineLossCorrection,
+            temperature,
+            pressure,
+            motor1Power_FL * 100,
+            motor3Power_FR * 100,
+            motor4Power_RL * 100,
+            motor2Power_RR * 100,
+            batt_adcRawValue * BATT_VOLTAGE_SCALE / 0xFFF,
+            telemetry_iterCount * 1000000 / TELEMETRY_INTERVAL
+        );
+
+        size_t len = strlen(buffer);
+        HAL_UART_Transmit_DMA(&SERIAL_UART, (uint8_t *)buffer, len);
+        HAL_UART_Transmit_DMA(&WLSER_UART, (uint8_t *)buffer, len);
+        telemetry_lastTransmission_us = currentTick_us;
+        telemetry_iterCount = 0;
+      }
+    }
+
+    HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
     pid_lastLoopTime_us = currentTick_us;
     telemetry_iterCount++;
 
-    if (currentTick_us - telemetry_lastTransmission_us > TELEMETRY_INTERVAL) {
-      char buffer[2048];
-      sprintf(
-          buffer,
-          "--------------------------------------------------------------------------------\r\n"
-          "Radio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
-          "Target      : %4.2fY %4.2fR %4.2fP\r\n"
-          "Orientation : %4.2fH %4.2fR %4.2fP\r\n"
-          "Errors      : %2.4fR %2.4fP\r\n"
-          "Corrections : %1.5fY %1.5fR %1.5fP %1.5fCos \r\n"
-          "Atmos       : %.2fC, %.2fPa\r\n"
-          "Powers      : %3.1f%% %3.1f%%\r\n"
-          "              %3.1f%% %3.1f%%\r\n"
-          "Batt        : %.2f V\r\n"
-          "It/s        : %d\r\n",
-          radio_rxValues[0],
-          radio_rxValues[1],
-          radio_rxValues[2],
-          radio_rxValues[3],
-          radio_rxValues[4],
-          radio_rxValues[5],
-          radio_rxValues[6],
-          radio_rxValues[7],
-          radio_rxValues[8],
-          radio_rxValues[9],
-          yaw,
-          targetRoll,
-          targetPitch,
-          heading,
-          roll,
-          pitch,
-          rollError,
-          pitchError,
-          yaw,
-          rollCorrection,
-          pitchCorrection,
-          cosineLossCorrection,
-          temperature,
-          pressure,
-          motor1Power_FL * 100,
-          motor3Power_FR * 100,
-          motor4Power_RL * 100,
-          motor2Power_RR * 100,
-          batt_adcRawValue * BATT_VOLTAGE_SCALE / 0xFFF,
-          telemetry_iterCount * 1000 / TELEMETRY_INTERVAL
-      );
-
-      size_t len = strlen(buffer);
-      HAL_UART_Transmit_DMA(&SERIAL_UART, (uint8_t *)buffer, len);
-      HAL_UART_Transmit_DMA(&WLSER_UART, (uint8_t *)buffer, len);
-
-      telemetry_lastTransmission_us = currentTick_us;
-      telemetry_iterCount = 0;
-    }
-
     uint8_t temp;
-    if (HAL_UART_Receive(&SERIAL_UART, &temp, 1, 0) == HAL_OK || HAL_UART_Receive(&WLSER_UART, &temp, 1, 0) == HAL_OK) {
+    if (HAL_UART_Receive(&SERIAL_UART, &temp, 1, 0) ==
+        HAL_OK /* || HAL_UART_Receive(&WLSER_UART, &temp, 1, 0) == HAL_OK */) {
       motors_SetPower(MOTOR_1_FL, 0.f);
       motors_SetPower(MOTOR_2_RR, 0.f);
       motors_SetPower(MOTOR_3_FR, 0.f);
@@ -670,7 +813,7 @@ static void MX_I2C1_Init(void) {
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x20404768;
+  hi2c1.Init.Timing = 0x6000030D;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -706,7 +849,7 @@ static void MX_I2C2_Init(void) {
 
   /* USER CODE END I2C2_Init 1 */
   hi2c2.Instance = I2C2;
-  hi2c2.Init.Timing = 0x20404768;
+  hi2c2.Init.Timing = 0x6000030D;
   hi2c2.Init.OwnAddress1 = 0;
   hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -742,7 +885,7 @@ static void MX_I2C4_Init(void) {
 
   /* USER CODE END I2C4_Init 1 */
   hi2c4.Instance = I2C4;
-  hi2c4.Init.Timing = 0x20404768;
+  hi2c4.Init.Timing = 0x6000030D;
   hi2c4.Init.OwnAddress1 = 0;
   hi2c4.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c4.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
