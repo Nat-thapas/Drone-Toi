@@ -27,6 +27,7 @@
 #include "bmp280.h"
 #include "bno055.h"
 #include "bno055_stm32.h"
+#include "math.h"
 #include "stdarg.h"
 #include "stdio.h"
 #include "stdlib.h"
@@ -51,7 +52,24 @@
 #define PRECISION_TIMER_TIM htim2
 #define MOTORS_PWM_TIM htim3
 
+#define IMU_I2C hi2c1
+#define ALT_I2C hi2c2
+#define TOF_I2C hi2c3
+
 #define PRECISION_TIMER_COUNT htim2.Instance->CNT
+
+// After threshold error 1 byte will be skipped to try to align incoming data
+#define RADIO_CONSECUTIVE_ERROR_THRESHOLD 3
+
+// Value that is within +- deadzone of middle (1500) will be set to middle (1500)
+// only active on channels that return to center (1, 2, 4)
+#define RADIO_DEADZONE 25
+
+#define PID_PROPORTIONAL_GAIN 5.f
+#define PID_INTEGRAL_GAIN 0.01f
+#define PID_DERIVATIVE_GAIN 0.5f
+
+#define I2C_INIT_RETRY_LIMIT 5
 
 #define MOTOR_1_FL 1
 #define MOTOR_2_RR 2
@@ -65,12 +83,6 @@
 
 #define BATT_SENSOR_ADC hadc1
 #define BATT_VOLTAGE_SCALE 3.3f
-
-#define IMU_I2C hi2c1
-#define ALT_I2C hi2c2
-#define TOF_I2C hi2c3
-
-#define TARGET_ANGLE_LIMIT 5.0f  // degrees
 
 /* USER CODE END PD */
 
@@ -133,17 +145,35 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 
-uint32_t precisionTimer_acc_us = 0;
+int_fast32_t precisionTimer_acc_us = 0;
 
-uint32_t telemetry_lastTransmission_us = 0;
+int_fast16_t radio_consecutiveErrors = 0;
+
+int_fast32_t telemetry_lastTransmission_us = 0;
 int_fast16_t telemetry_iterCount = 0;
 
 uint8_t radio_rxBuffer[32] = {};
-int_fast16_t radio_rxValues[10] = {};
+int_fast16_t radio_rxValues[10] = {
+    1000,
+    1000,
+    1000,
+    1000,
+    1000,
+    1000,
+    1000,
+    1000,
+    1000,
+    1000,
+};
+const float radio_targetAngleLimits[3] = {5.f, 10.f, 30.f};
 
 uint32_t batt_adcRawValue = 0;
 
-uint32_t lastLoopTime_us = 0;
+int_fast32_t pid_lastLoopTime_us = 0;
+float pid_lastRollError = NAN;
+float pid_lastPitchError = NAN;
+float pid_cumulativeRollError = 0.f;
+float pid_cumulativePitchError = 0.f;
 
 BMP280_HandleTypedef bmp280;
 
@@ -172,7 +202,7 @@ static void MX_TIM2_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-uint32_t GetTickPrecise() {
+int_fast32_t GetTickPrecise() {
   return precisionTimer_acc_us + PRECISION_TIMER_COUNT;
 }
 
@@ -195,11 +225,11 @@ void UART_Transmitln_DMA(UART_HandleTypeDef *huart, char *str) {
   UART_Transmitf_DMA(huart, "%s\r\n", str);
 }
 
-void MOTORS_SetPower(uint8_t motorId, int_fast16_t power) {
-  if (power < 0) power = 0;
-  if (power > 1000) power = 1000;
-  uint16_t value = power + 1000;
-  switch (motorId) {
+void motors_SetPower(uint8_t motor, float power) {
+  if (power < 0.f) power = 0.f;
+  if (power > 1.f) power = 1.f;
+  uint16_t value = power * 1000.f + 1000.f;
+  switch (motor) {
     case MOTOR_1_FL:
       MOTOR_1_FL_PWM_CCR = value;
       break;
@@ -216,6 +246,16 @@ void MOTORS_SetPower(uint8_t motorId, int_fast16_t power) {
     default:
       break;
   }
+}
+
+int_fast8_t radio_parseTriStateSwitch(int_fast16_t value) {
+  if (value < 1250) return 0;
+  if (value > 1750) return 2;
+  return 1;
+}
+
+bool radio_parseBiStateSwitch(int_fast16_t value) {
+  return value > 1500;
 }
 
 /* USER CODE END 0 */
@@ -267,6 +307,8 @@ int main(void) {
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
+  HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_SET);
+
   HAL_UART_Receive_DMA(&RADIO_RX_UART, radio_rxBuffer, 32);
   HAL_TIM_Base_Start(&PRECISION_TIMER_TIM);
   HAL_TIM_PWM_Start(&MOTORS_PWM_TIM, TIM_CHANNEL_1);
@@ -275,20 +317,34 @@ int main(void) {
   HAL_TIM_PWM_Start(&MOTORS_PWM_TIM, TIM_CHANNEL_4);
   HAL_ADC_Start_DMA(&BATT_SENSOR_ADC, &batt_adcRawValue, 1);
 
+  HAL_Delay(1000);
+
+  int_fast8_t retry = 0;
+
   bno055_assignI2C(&IMU_I2C);
-  if (!bno055_setup()) {
-    UART_Transmit_DMA(&SERIAL_UART, "Failed to initialize BNO055 Inertial Measurement Unit");
-    Error_Handler();
+
+  while (!bno055_setup()) {
+    UART_Transmit_DMA(&SERIAL_UART, "Failed to initialize BNO055 Inertial Measurement Unit, retrying...");
+    if (retry >= I2C_INIT_RETRY_LIMIT) { Error_Handler(); }
+    HAL_Delay(100);
+    retry++;
   }
   bno055_setOperationModeNDOF();
 
   bmp280_init_default_params(&bmp280.params);
+  bmp280.params.filter = BMP280_FILTER_16;
+  bmp280.params.oversampling_pressure = BMP280_ULTRA_HIGH_RES;
+  bmp280.params.oversampling_temperature = BMP280_LOW_POWER;
+  bmp280.params.oversampling_humidity = BMP280_SKIPPED;
+  bmp280.params.standby = BMP280_STANDBY_05;
   bmp280.addr = BMP280_I2C_ADDRESS_0;
   bmp280.i2c = &ALT_I2C;
 
-  if (!bmp280_init(&bmp280, &bmp280.params)) {
-    UART_Transmit_DMA(&SERIAL_UART, "Failed to initialize BMP280 Altimeter");
-    Error_Handler();
+  while (!bmp280_init(&bmp280, &bmp280.params)) {
+    UART_Transmit_DMA(&SERIAL_UART, "Failed to initialize BMP280 Altimeter, retrying...");
+    if (retry >= I2C_INIT_RETRY_LIMIT) { Error_Handler(); }
+    HAL_Delay(100);
+    retry++;
   }
 
   /* USER CODE END 2 */
@@ -299,8 +355,8 @@ int main(void) {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    uint32_t currentTick_us = GetTickPrecise();
-    uint32_t deltaTime_us = currentTick_us - lastLoopTime_us;
+    int_fast32_t currentTick_us = GetTickPrecise();
+    int_fast32_t deltaTime_us = currentTick_us - pid_lastLoopTime_us;
 
     bno055_vector_t vector = bno055_getVectorEuler();
     float heading = vector.x;
@@ -310,30 +366,58 @@ int main(void) {
     float temperature, pressure, humidity;  // humidity only for BME280
     bmp280_read_float(&bmp280, &temperature, &pressure, &humidity);
 
-    // Power range is 0 - 1000
-    int_fast16_t basePower = radio_rxValues[2] - 1000;  // Channel 3 = left joystick vertical
-    int_fast16_t motor1Power = basePower;
-    int_fast16_t motor2Power = basePower;
-    int_fast16_t motor3Power = basePower;
-    int_fast16_t motor4Power = basePower;
+    float targetAngleLimit = radio_targetAngleLimits[radio_parseTriStateSwitch(radio_rxValues[8])];
+
+    float basePower = (float)(radio_rxValues[2] - 1000) / 1000;  // Channel 3 = left joystick vertical
+    float motor1Power_FL = basePower;
+    float motor2Power_RR = basePower;
+    float motor3Power_FR = basePower;
+    float motor4Power_RL = basePower;
 
     int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
-    if (abs(rollCommand) < 50) rollCommand = 0;
-    float targetRoll = rollCommand * TARGET_ANGLE_LIMIT / 500.0f;
+    if (rollCommand > -RADIO_DEADZONE && rollCommand < RADIO_DEADZONE) rollCommand = 0;
+    float targetRoll = (float)rollCommand * targetAngleLimit / 500.f;
 
-    int_fast16_t pitchCommand = radio_rxValues[1] - 1500;  // Channel 2 = right joystick vertical
-    if (abs(pitchCommand) < 50) pitchCommand = 0;
-    float targetPitch = pitchCommand * TARGET_ANGLE_LIMIT / 500.0f;
+    int_fast16_t pitchCommand = 1500 - radio_rxValues[1];  // Channel 2 = right joystick vertical
+    if (pitchCommand > -RADIO_DEADZONE && pitchCommand < RADIO_DEADZONE) pitchCommand = 0;
+    float targetPitch = (float)pitchCommand * targetAngleLimit / 500.f;
+
+    float delta = (float)deltaTime_us / 1000000.f;
 
     float rollError = targetRoll - roll;
     float pitchError = targetPitch - pitch;
 
-    // TODO: Do PID and stuff here
+    pid_cumulativeRollError += rollError;
+    pid_cumulativePitchError += pitchError;
 
-    MOTORS_SetPower(MOTOR_1_FL, basePower);
-    MOTORS_SetPower(MOTOR_2_RR, basePower);
-    MOTORS_SetPower(MOTOR_3_FR, basePower);
-    MOTORS_SetPower(MOTOR_4_RL, basePower);
+    float cumulativeRollError = pid_cumulativeRollError;
+    float cumulativePitchError = pid_cumulativePitchError;
+
+    float deltaRollError = (rollError - pid_lastRollError) / delta;
+    float deltaPitchError = (pitchError - pid_lastPitchError) / delta;
+
+    float proportionalRollCorrection = rollError * PID_PROPORTIONAL_GAIN / 100.f;
+    float proportionalPitchCorrection = pitchError * PID_PROPORTIONAL_GAIN / 100.f;
+    float integralRollCorrection = cumulativeRollError * PID_INTEGRAL_GAIN / 100.f;
+    float integralPitchCorrection = cumulativePitchError * PID_INTEGRAL_GAIN / 100.f;
+    float derivativeRollCorrection = deltaRollError * PID_DERIVATIVE_GAIN / 100.f;
+    float derivativePitchCorrection = deltaPitchError * PID_DERIVATIVE_GAIN / 100.f;
+
+    float rollCorrection = proportionalRollCorrection + integralRollCorrection + derivativeRollCorrection;
+    float pitchCorrection = proportionalPitchCorrection + integralPitchCorrection + derivativePitchCorrection;
+
+    motor1Power_FL += rollCorrection - pitchCorrection;
+    motor2Power_RR += -rollCorrection + pitchCorrection;
+    motor3Power_FR += -rollCorrection - pitchCorrection;
+    motor4Power_RL += rollCorrection + pitchCorrection;
+
+    pid_lastRollError = rollError;
+    pid_lastPitchError = pitchError;
+
+    motors_SetPower(MOTOR_1_FL, motor1Power_FL);
+    motors_SetPower(MOTOR_2_RR, motor2Power_RR);
+    motors_SetPower(MOTOR_3_FR, motor3Power_FR);
+    motors_SetPower(MOTOR_4_RL, motor4Power_RL);
 
     telemetry_iterCount++;
 
@@ -346,7 +430,8 @@ int main(void) {
           "Target angles: Roll = %.2f, Pitch = %.2f\r\n"
           "Orientation: Heading = %.2f, Roll = %.2f, Pitch = %.2f\r\n"
           "Atmosphere: Temperature = %.2f C, Pressure = %.2f Pa\r\n"
-          "Final power motors: %04d, %04d, %04d, %04d\r\n"
+          "Motors Power: %04d %04d\r\n"
+          "              %04d %04d\r\n"
           "Battery voltage: %.2f V\r\n"
           "Iterations per seconds: %d\r\n",
           radio_rxValues[0],
@@ -366,10 +451,10 @@ int main(void) {
           pitch,
           temperature,
           pressure,
-          motor1Power,
-          motor2Power,
-          motor3Power,
-          motor4Power,
+          motor1Power_FL,
+          motor3Power_FR,
+          motor4Power_RL,
+          motor2Power_RR,
           batt_adcRawValue * BATT_VOLTAGE_SCALE / 0xFFF,
           telemetry_iterCount * 1000 / STAT_SERIAL_INTERVAL
       );
@@ -382,7 +467,7 @@ int main(void) {
       telemetry_iterCount = 0;
     }
 
-    lastLoopTime_us = currentTick_us;
+    pid_lastLoopTime_us = currentTick_us;
   }
   /* USER CODE END 3 */
 }
@@ -971,10 +1056,12 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         if (value > 2000) value = 2000;
         radio_rxValues[channel] = value;
       }
+      radio_consecutiveErrors = 0;
       // UART_Transmit_DMA(&SERIAL_UART, "Received and processed valid radio packet");
       HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
     } else {
+      radio_consecutiveErrors++;
       // UART_Transmitf_DMA(
       //     &SERIAL_UART,
       //     "Received invalid radio packet. Checksum: 0x%04X, Length: 0x%02X, Protocol: 0x%02X",
@@ -984,6 +1071,15 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
       // );
       HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+      if (radio_consecutiveErrors >= RADIO_CONSECUTIVE_ERROR_THRESHOLD) {
+        UART_Transmitf_DMA(
+            "Received %d consecutive invalid radio packets, skipping next byte.",
+            radio_consecutiveErrors
+        );
+        uint8_t temp;
+        HAL_UART_Receive(&RADIO_RX_UART, &temp, 1, 20);
+      }
     }
     HAL_UART_Receive_DMA(&RADIO_RX_UART, radio_rxBuffer, 32);
   }
