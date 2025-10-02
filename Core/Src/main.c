@@ -27,6 +27,7 @@
 #include "bmp280.h"
 #include "bno055.h"
 #include "bno055_stm32.h"
+#include "float.h"
 #include "math.h"
 #include "stdarg.h"
 #include "stdio.h"
@@ -42,7 +43,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define STAT_SERIAL_INTERVAL 250000  // us.
+#define TELEMETRY_INTERVAL 250000  // us.
 
 #define RADIO_RX_UART huart1
 #define RADIO_TELEM_UART huart2
@@ -65,11 +66,12 @@
 // only active on channels that return to center (1, 2, 4)
 #define RADIO_DEADZONE 25
 
-#define PID_PROPORTIONAL_GAIN 5.f
-#define PID_INTEGRAL_GAIN 0.01f
-#define PID_DERIVATIVE_GAIN 0.5f
+// Gain units are roughly in % power increase/decrease per degree error
+#define PID_PROPORTIONAL_GAIN 1.f
+#define PID_INTEGRAL_GAIN 0.f
+#define PID_DERIVATIVE_GAIN 0.f
 
-#define I2C_INIT_RETRY_LIMIT 5
+#define I2C_PERIPHERAL_INIT_RETRY_LIMIT 5
 
 #define MOTOR_1_FL 1
 #define MOTOR_2_RR 2
@@ -325,11 +327,13 @@ int main(void) {
 
   while (!bno055_setup()) {
     UART_Transmit_DMA(&SERIAL_UART, "Failed to initialize BNO055 Inertial Measurement Unit, retrying...");
-    if (retry >= I2C_INIT_RETRY_LIMIT) { Error_Handler(); }
+    if (retry >= I2C_PERIPHERAL_INIT_RETRY_LIMIT) { Error_Handler(); }
     HAL_Delay(100);
     retry++;
   }
   bno055_setOperationModeNDOF();
+
+  retry = 0;
 
   bmp280_init_default_params(&bmp280.params);
   bmp280.params.filter = BMP280_FILTER_16;
@@ -342,10 +346,12 @@ int main(void) {
 
   while (!bmp280_init(&bmp280, &bmp280.params)) {
     UART_Transmit_DMA(&SERIAL_UART, "Failed to initialize BMP280 Altimeter, retrying...");
-    if (retry >= I2C_INIT_RETRY_LIMIT) { Error_Handler(); }
+    if (retry >= I2C_PERIPHERAL_INIT_RETRY_LIMIT) { Error_Handler(); }
     HAL_Delay(100);
     retry++;
   }
+
+  HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_RESET);
 
   /* USER CODE END 2 */
 
@@ -369,20 +375,21 @@ int main(void) {
     float targetAngleLimit = radio_targetAngleLimits[radio_parseTriStateSwitch(radio_rxValues[8])];
 
     float basePower = (float)(radio_rxValues[2] - 1000) / 1000;  // Channel 3 = left joystick vertical
-    float motor1Power_FL = basePower;
-    float motor2Power_RR = basePower;
-    float motor3Power_FR = basePower;
-    float motor4Power_RL = basePower;
 
     int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
     if (rollCommand > -RADIO_DEADZONE && rollCommand < RADIO_DEADZONE) rollCommand = 0;
-    float targetRoll = (float)rollCommand * targetAngleLimit / 500.f;
+    float targetRoll = rollCommand * targetAngleLimit / 500.f;
 
     int_fast16_t pitchCommand = 1500 - radio_rxValues[1];  // Channel 2 = right joystick vertical
     if (pitchCommand > -RADIO_DEADZONE && pitchCommand < RADIO_DEADZONE) pitchCommand = 0;
-    float targetPitch = (float)pitchCommand * targetAngleLimit / 500.f;
+    float targetPitch = pitchCommand * targetAngleLimit / 500.f;
 
-    float delta = (float)deltaTime_us / 1000000.f;
+    int_fast16_t yawCommand = radio_rxValues[3] - 1500;  // Channel 4 = left joystick horizontal
+    if (yawCommand > -RADIO_DEADZONE && yawCommand < RADIO_DEADZONE) yawCommand = 0;
+    float yaw = yawCommand * targetAngleLimit / 50000.f;
+
+    float delta = deltaTime_us / 1000000.f;
+    if (isnanf(delta) || isinff(delta)) { delta = FLT_MIN; }
 
     float rollError = targetRoll - roll;
     float pitchError = targetPitch - pitch;
@@ -395,6 +402,8 @@ int main(void) {
 
     float deltaRollError = (rollError - pid_lastRollError) / delta;
     float deltaPitchError = (pitchError - pid_lastPitchError) / delta;
+    if (isnanf(deltaRollError) || isinff(deltaRollError)) { deltaRollError = 0.f; }
+    if (isnanf(deltaPitchError) || isinff(deltaPitchError)) { deltaPitchError = 0.f; }
 
     float proportionalRollCorrection = rollError * PID_PROPORTIONAL_GAIN / 100.f;
     float proportionalPitchCorrection = pitchError * PID_PROPORTIONAL_GAIN / 100.f;
@@ -406,10 +415,13 @@ int main(void) {
     float rollCorrection = proportionalRollCorrection + integralRollCorrection + derivativeRollCorrection;
     float pitchCorrection = proportionalPitchCorrection + integralPitchCorrection + derivativePitchCorrection;
 
-    motor1Power_FL += rollCorrection - pitchCorrection;
-    motor2Power_RR += -rollCorrection + pitchCorrection;
-    motor3Power_FR += -rollCorrection - pitchCorrection;
-    motor4Power_RL += rollCorrection + pitchCorrection;
+    float cosineLossCorrection = 1.f / (cosf(roll / 180.f * M_PI) * cosf(pitch / 180.f * M_PI));
+    if (isnanf(cosineLossCorrection) || isinff(cosineLossCorrection)) { cosineLossCorrection = 1.f; }
+
+    float motor1Power_FL = basePower * cosineLossCorrection + rollCorrection - pitchCorrection + yaw;
+    float motor2Power_RR = basePower * cosineLossCorrection - rollCorrection + pitchCorrection + yaw;
+    float motor3Power_FR = basePower * cosineLossCorrection - rollCorrection - pitchCorrection - yaw;
+    float motor4Power_RL = basePower * cosineLossCorrection + rollCorrection + pitchCorrection - yaw;
 
     pid_lastRollError = rollError;
     pid_lastPitchError = pitchError;
@@ -419,21 +431,24 @@ int main(void) {
     motors_SetPower(MOTOR_3_FR, motor3Power_FR);
     motors_SetPower(MOTOR_4_RL, motor4Power_RL);
 
+    pid_lastLoopTime_us = currentTick_us;
     telemetry_iterCount++;
 
-    if (currentTick_us - telemetry_lastTransmission_us > STAT_SERIAL_INTERVAL) {
+    if (currentTick_us - telemetry_lastTransmission_us > TELEMETRY_INTERVAL) {
       char buffer[2048];
       sprintf(
           buffer,
           "--------------------------------------------------------------------------------\r\n"
-          "Radio values: %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d\r\n"
-          "Target angles: Roll = %.2f, Pitch = %.2f\r\n"
-          "Orientation: Heading = %.2f, Roll = %.2f, Pitch = %.2f\r\n"
-          "Atmosphere: Temperature = %.2f C, Pressure = %.2f Pa\r\n"
-          "Motors Power: %04d %04d\r\n"
+          "Radio       : %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d\r\n"
+          "Target      : %4.2fY %4.2fR %4.2fP\r\n"
+          "Orientation : %4.2fH %4.2fR %4.2fP\r\n"
+          "Errors      : %4.2fR %4.2fP\r\n"
+          "Corrections : %4.2fY %4.2fR %4.2fP\r\n"
+          "Atmos       : %.2fC, %.2fPa\r\n"
+          "Powers      : %04d %04d\r\n"
           "              %04d %04d\r\n"
-          "Battery voltage: %.2f V\r\n"
-          "Iterations per seconds: %d\r\n",
+          "Batt        : %.2f V\r\n"
+          "It/s        : %d\r\n",
           radio_rxValues[0],
           radio_rxValues[1],
           radio_rxValues[2],
@@ -444,11 +459,17 @@ int main(void) {
           radio_rxValues[7],
           radio_rxValues[8],
           radio_rxValues[9],
+          yaw,
           targetRoll,
           targetPitch,
           heading,
           roll,
           pitch,
+          rollError,
+          pitchError,
+          yaw,
+          rollCorrection,
+          pitchCorrection,
           temperature,
           pressure,
           motor1Power_FL,
@@ -456,7 +477,7 @@ int main(void) {
           motor4Power_RL,
           motor2Power_RR,
           batt_adcRawValue * BATT_VOLTAGE_SCALE / 0xFFF,
-          telemetry_iterCount * 1000 / STAT_SERIAL_INTERVAL
+          telemetry_iterCount * 1000 / TELEMETRY_INTERVAL
       );
 
       size_t len = strlen(buffer);
@@ -467,7 +488,21 @@ int main(void) {
       telemetry_iterCount = 0;
     }
 
-    pid_lastLoopTime_us = currentTick_us;
+    uint8_t temp;
+    if (HAL_UART_Receive(&SERIAL_UART, &temp, 1, 0) == HAL_OK || HAL_UART_Receive(&WLSER_UART, &temp, 1, 0) == HAL_OK) {
+      motors_SetPower(MOTOR_1_FL, 0.f);
+      motors_SetPower(MOTOR_2_RR, 0.f);
+      motors_SetPower(MOTOR_3_FR, 0.f);
+      motors_SetPower(MOTOR_4_RL, 0.f);
+
+      char msg[] = "E-STOP Activated, shutting down...";
+      size_t len = strlen(msg);
+
+      while (HAL_UART_Transmit(&SERIAL_UART, msg, len, 250) == HAL_BUSY);
+      while (HAL_UART_Transmit(&WLSER_UART, msg, len, 250) == HAL_BUSY);
+
+      Error_Handler();
+    }
   }
   /* USER CODE END 3 */
 }
@@ -1095,6 +1130,12 @@ void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
+
+  motors_SetPower(MOTOR_1_FL, 0.f);
+  motors_SetPower(MOTOR_2_RR, 0.f);
+  motors_SetPower(MOTOR_3_FR, 0.f);
+  motors_SetPower(MOTOR_4_RL, 0.f);
+
   HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_RESET);
