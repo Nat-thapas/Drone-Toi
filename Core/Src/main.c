@@ -326,8 +326,19 @@ int main(void) {
   bno055_assignI2C(&IMU_I2C);
 
   while (!bno055_setup()) {
-    UART_Transmit_DMA(&SERIAL_UART, "Failed to initialize BNO055 Inertial Measurement Unit, retrying...");
-    if (retry >= I2C_PERIPHERAL_INIT_RETRY_LIMIT) { Error_Handler(); }
+    if (retry >= I2C_PERIPHERAL_INIT_RETRY_LIMIT) {
+      UART_Transmitln_DMA(
+          &SERIAL_UART,
+          "Failed to initialize BNO055 Inertial Measurement Unit. Entering error state..."
+      );
+      UART_Transmitln_DMA(
+          &WLSER_UART,
+          "Failed to initialize BNO055 Inertial Measurement Unit. Entering error state..."
+      );
+      Error_Handler();
+    }
+    UART_Transmitln_DMA(&SERIAL_UART, "Failed to initialize BNO055 Inertial Measurement Unit, retrying...");
+    UART_Transmitln_DMA(&WLSER_UART, "Failed to initialize BNO055 Inertial Measurement Unit, retrying...");
     HAL_Delay(100);
     retry++;
   }
@@ -345,8 +356,13 @@ int main(void) {
   bmp280.i2c = &ALT_I2C;
 
   while (!bmp280_init(&bmp280, &bmp280.params)) {
-    UART_Transmit_DMA(&SERIAL_UART, "Failed to initialize BMP280 Altimeter, retrying...");
-    if (retry >= I2C_PERIPHERAL_INIT_RETRY_LIMIT) { Error_Handler(); }
+    if (retry >= I2C_PERIPHERAL_INIT_RETRY_LIMIT) {
+      UART_Transmitln_DMA(&SERIAL_UART, "Failed to initialize BMP280 Altimeter. Entering error state...");
+      UART_Transmitln_DMA(&WLSER_UART, "Failed to initialize BMP280 Altimeter. Entering error state...");
+      Error_Handler();
+    }
+    UART_Transmitln_DMA(&SERIAL_UART, "Failed to initialize BMP280 Altimeter, retrying...");
+    UART_Transmitln_DMA(&WLSER_UART, "Failed to initialize BMP280 Altimeter, retrying...");
     HAL_Delay(100);
     retry++;
   }
@@ -445,8 +461,8 @@ int main(void) {
           "Errors      : %4.2fR %4.2fP\r\n"
           "Corrections : %4.2fY %4.2fR %4.2fP\r\n"
           "Atmos       : %.2fC, %.2fPa\r\n"
-          "Powers      : %04d %04d\r\n"
-          "              %04d %04d\r\n"
+          "Powers      : %03.1f%% %03.1f%%\r\n"
+          "              %03.1f%% %03.1f%%\r\n"
           "Batt        : %.2f V\r\n"
           "It/s        : %d\r\n",
           radio_rxValues[0],
@@ -472,10 +488,10 @@ int main(void) {
           pitchCorrection,
           temperature,
           pressure,
-          motor1Power_FL,
-          motor3Power_FR,
-          motor4Power_RL,
-          motor2Power_RR,
+          motor1Power_FL * 100,
+          motor3Power_FR * 100,
+          motor4Power_RL * 100,
+          motor2Power_RR * 100,
           batt_adcRawValue * BATT_VOLTAGE_SCALE / 0xFFF,
           telemetry_iterCount * 1000 / TELEMETRY_INTERVAL
       );
@@ -495,11 +511,11 @@ int main(void) {
       motors_SetPower(MOTOR_3_FR, 0.f);
       motors_SetPower(MOTOR_4_RL, 0.f);
 
-      char msg[] = "E-STOP Activated, shutting down...";
+      char msg[] = "E-STOP Activated, shutting down...\r\n";
       size_t len = strlen(msg);
 
-      while (HAL_UART_Transmit(&SERIAL_UART, msg, len, 250) == HAL_BUSY);
-      while (HAL_UART_Transmit(&WLSER_UART, msg, len, 250) == HAL_BUSY);
+      while (HAL_UART_Transmit(&SERIAL_UART, (uint8_t *)msg, len, 250) == HAL_BUSY);
+      while (HAL_UART_Transmit(&WLSER_UART, (uint8_t *)msg, len, 250) == HAL_BUSY);
 
       Error_Handler();
     }
@@ -1092,14 +1108,14 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         radio_rxValues[channel] = value;
       }
       radio_consecutiveErrors = 0;
-      // UART_Transmit_DMA(&SERIAL_UART, "Received and processed valid radio packet");
+      // UART_Transmitln_DMA(&SERIAL_UART, "Received and processed valid radio packet");
       HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
     } else {
       radio_consecutiveErrors++;
       // UART_Transmitf_DMA(
       //     &SERIAL_UART,
-      //     "Received invalid radio packet. Checksum: 0x%04X, Length: 0x%02X, Protocol: 0x%02X",
+      //     "Received invalid radio packet. Checksum: 0x%04X, Length: 0x%02X, Protocol: 0x%02X\r\n",
       //     checksum,
       //     radio_rxBuffer[0],
       //     radio_rxBuffer[1]
@@ -1109,7 +1125,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 
       if (radio_consecutiveErrors >= RADIO_CONSECUTIVE_ERROR_THRESHOLD) {
         UART_Transmitf_DMA(
-            "Received %d consecutive invalid radio packets, skipping next byte.",
+            &SERIAL_UART,
+            "Received %d consecutive invalid radio packets, skipping next byte.\r\n",
             radio_consecutiveErrors
         );
         uint8_t temp;
@@ -1143,7 +1160,7 @@ void Error_Handler(void) {
     HAL_GPIO_TogglePin(LED_Red_GPIO_Port, LED_Red_Pin);
     HAL_GPIO_TogglePin(LED_Green_GPIO_Port, LED_Green_Pin);
     HAL_GPIO_TogglePin(LED_Blue_GPIO_Port, LED_Blue_Pin);
-    HAL_Delay(250);
+    for (uint_fast32_t i = 0; i < 1000000; i++) {}
   }
   /* USER CODE END Error_Handler_Debug */
 }
