@@ -455,14 +455,14 @@ int main(void) {
       sprintf(
           buffer,
           "--------------------------------------------------------------------------------\r\n"
-          "Radio       : %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d, %04d\r\n"
+          "Radio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
           "Target      : %4.2fY %4.2fR %4.2fP\r\n"
           "Orientation : %4.2fH %4.2fR %4.2fP\r\n"
-          "Errors      : %4.2fR %4.2fP\r\n"
-          "Corrections : %4.2fY %4.2fR %4.2fP\r\n"
+          "Errors      : %2.4fR %2.4fP\r\n"
+          "Corrections : %1.5fY %1.5fR %1.5fP %1.5fCos \r\n"
           "Atmos       : %.2fC, %.2fPa\r\n"
-          "Powers      : %03.1f%% %03.1f%%\r\n"
-          "              %03.1f%% %03.1f%%\r\n"
+          "Powers      : %3.1f%% %3.1f%%\r\n"
+          "              %3.1f%% %3.1f%%\r\n"
           "Batt        : %.2f V\r\n"
           "It/s        : %d\r\n",
           radio_rxValues[0],
@@ -486,6 +486,7 @@ int main(void) {
           yaw,
           rollCorrection,
           pitchCorrection,
+          cosineLossCorrection,
           temperature,
           pressure,
           motor1Power_FL * 100,
