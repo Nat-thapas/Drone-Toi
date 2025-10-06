@@ -489,6 +489,7 @@ int main(void) {
     float temperature, pressure, humidity;  // humidity only for BME280
     bmp280_read_float(&bmp280, &temperature, &pressure, &humidity);
 
+    // Tri-state switch (third from left)
     float targetAngleLimit = radio_targetAngleLimits[radio_parseTriStateSwitch(radio_rxValues[8])];
 
     // float rollOffset = (radio_rxValues[5] - 1500.f) / 100.f;
@@ -507,7 +508,7 @@ int main(void) {
     float integralGain = pid_integralGain;
     float derivativeGain = pid_derivativeGain;
 
-    int_fast16_t altCommand = radio_rxValues[2] - 1000;
+    int_fast16_t altCommand = radio_rxValues[2] - 1000;  // Channel 3 = left joystick vertical
     if (altCommand < RADIO_DEADZONE) {
       pid_lastRollError = NAN;
       pid_lastPitchError = NAN;
@@ -631,7 +632,7 @@ int main(void) {
         }
       }
     } else {
-      float basePower = altCommand / 1000.f;  // Channel 3 = left joystick vertical
+      float basePower = altCommand / 1000.f;
 
       int_fast16_t rollCommand = 1500 - radio_rxValues[0];  // Channel 1 = right joystick horizontal
       if (rollCommand > -RADIO_DEADZONE && rollCommand < RADIO_DEADZONE) rollCommand = 0;
@@ -682,15 +683,15 @@ int main(void) {
       pid_lastRollError = rollError;
       pid_lastPitchError = pitchError;
 
-      uint_fast16_t motor1Pwm_FL = motor1Power_FL * 1000.f + 1000.f;
-      uint_fast16_t motor2Pwm_RR = motor2Power_RR * 1000.f + 1000.f;
-      uint_fast16_t motor3Pwm_FR = motor3Power_FR * 1000.f + 1000.f;
-      uint_fast16_t motor4Pwm_RL = motor4Power_RL * 1000.f + 1000.f;
+      int_fast16_t motor1Pwm_FL = motor1Power_FL * 1000.f + 1000.f;
+      int_fast16_t motor2Pwm_RR = motor2Power_RR * 1000.f + 1000.f;
+      int_fast16_t motor3Pwm_FR = motor3Power_FR * 1000.f + 1000.f;
+      int_fast16_t motor4Pwm_RL = motor4Power_RL * 1000.f + 1000.f;
 
-      motor1Pwm_FL = motor1Pwm_FL < 1000u ? 1000u : (motor1Pwm_FL > 2000u ? 2000u : motor1Pwm_FL);
-      motor2Pwm_RR = motor2Pwm_RR < 1000u ? 1000u : (motor2Pwm_RR > 2000u ? 2000u : motor2Pwm_RR);
-      motor3Pwm_FR = motor3Pwm_FR < 1000u ? 1000u : (motor3Pwm_FR > 2000u ? 2000u : motor3Pwm_FR);
-      motor4Pwm_RL = motor4Pwm_RL < 1000u ? 1000u : (motor4Pwm_RL > 2000u ? 2000u : motor4Pwm_RL);
+      motor1Pwm_FL = motor1Pwm_FL < 1000 ? 1000 : (motor1Pwm_FL > 2000 ? 2000 : motor1Pwm_FL);
+      motor2Pwm_RR = motor2Pwm_RR < 1000 ? 1000 : (motor2Pwm_RR > 2000 ? 2000 : motor2Pwm_RR);
+      motor3Pwm_FR = motor3Pwm_FR < 1000 ? 1000 : (motor3Pwm_FR > 2000 ? 2000 : motor3Pwm_FR);
+      motor4Pwm_RL = motor4Pwm_RL < 1000 ? 1000 : (motor4Pwm_RL > 2000 ? 2000 : motor4Pwm_RL);
 
       MOTOR_1_FL_PWM_CCR = motor1Pwm_FL;
       MOTOR_2_RR_PWM_CCR = motor2Pwm_RR;
@@ -1322,9 +1323,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (checksum == 0xFFFF && radio_rxBuffer[0] == 0x20 && radio_rxBuffer[1] == 0x40) {
       for (int channel = 0; channel < 10; channel++) {
         uint16_t value = ((uint16_t)(radio_rxBuffer[channel * 2 + 3]) << 8) | radio_rxBuffer[channel * 2 + 2];
-        if (value < 1000) value = 1000;
-        if (value > 2000) value = 2000;
-        radio_rxValues[channel] = value;
+        radio_rxValues[channel] = value < 1000 ? 1000 : (value > 2000 ? 2000 : value);
       }
       radio_consecutiveErrors = 0;
       // Serial_Transmitln_DMA("Received and processed valid radio packet");
