@@ -71,5 +71,6 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
     # Add user defined libraries
 )
 
-# Enable float printf
+# Enable float printf and scanf
 target_link_options(${CMAKE_PROJECT_NAME} PRIVATE "-u_printf_float")
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE "-u_scanf_float")

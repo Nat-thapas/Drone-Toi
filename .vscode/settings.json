@@ -4,6 +4,12 @@
     "main.h": "c",
     "bno055.h": "c",
     "cmath": "c",
-    "cstdlib": "c"
+    "cstdlib": "c",
+    "bit": "c",
+    "compare": "c",
+    "concepts": "c",
+    "type_traits": "c",
+    "limits": "c",
+    "typeinfo": "c"
   }
 }
