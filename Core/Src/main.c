@@ -470,6 +470,10 @@ int main(void) {
           }
         }
       }
+
+      command_ready = false;
+      command_rxBufferSize = 0;
+      command_rxBuffer[0] = 0x00;
     }
 
     int_fast32_t currentTick_us = GetTickPrecise();
@@ -1351,10 +1355,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     char c = huart == &SERIAL_UART ? serial_rxBuffer : wlser_rxBuffer;
     if (c >= 0x20 && c <= 0x7E) {
       command_rxBuffer[command_rxBufferSize++] = c;
+      command_rxBuffer[command_rxBufferSize] = 0x00;
     } else if (c == 0x08 || c == 0x7F) {  // Backspace, DEL
       command_rxBuffer[--command_rxBufferSize] = 0x00;
     } else if (c == 0x0A) {  // LF
-      command_rxBuffer[command_rxBufferSize] = 0x00;
       command_ready = true;
     }
   }
