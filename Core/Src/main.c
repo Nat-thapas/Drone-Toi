@@ -229,7 +229,7 @@ static void MX_TIM2_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-int_fast32_t GetTickPrecise() {
+inline int_fast32_t GetTickPrecise() {
   return precisionTimer_acc_us + PRECISION_TIMER_COUNT;
 }
 
@@ -253,18 +253,16 @@ void Serial_Transmitln_DMA(char *str) {
   Serial_Transmitf_DMA("%s\r\n", str);
 }
 
-int_fast8_t radio_parseTriStateSwitch(int_fast16_t value) {
-  if (value < 1250) return 0;
-  if (value > 1750) return 2;
-  return 1;
+inline int_fast8_t radio_parseTriStateSwitch(int_fast16_t value) {
+  return value < 1250 ? 0 : (value > 1750 ? 2 : 1);
 }
 
-bool radio_parseBiStateSwitch(int_fast16_t value) {
+inline bool radio_parseBiStateSwitch(int_fast16_t value) {
   return value > 1500;
 }
 
-bool streqi(const char *a, const char *b) {
-  return strcmpi(a, b) == 0;
+inline bool strprei(const char *str, const char *pre) {
+  return strncmpi(str, pre, strlen(pre)) == 0;
 }
 
 /* USER CODE END 0 */
@@ -388,7 +386,7 @@ int main(void) {
     if (command_ready) {
       char *command = command_rxBuffer;
       size_t len = command_rxBufferSize;
-      if (len >= 4 && streqi(command, "stop")) {
+      if (len >= 4 && strprei(command, "stop")) {
         // stop
 
         MOTOR_1_FL_PWM_CCR = 1000u;
@@ -403,65 +401,65 @@ int main(void) {
         while (HAL_UART_Transmit(&WLSER_UART, (uint8_t *)msg, len, 250) == HAL_BUSY);
 
         Error_Handler();
-      } else if (len >= 3 && streqi(command, "set")) {
+      } else if (len >= 3 && strprei(command, "set")) {
         // set
 
         command += 3;
         while (*(command++) == ' ') {}
-        if (len >= 3 && streqi(command, "pid")) {
+        if (len >= 3 && strprei(command, "pid")) {
           // set pid
 
           command += 3;
           while (*(command++) == ' ') {}
-          if (len >= 1 && streqi(command, "p")) {
+          if (len >= 1 && strprei(command, "p")) {
             // set pid p
 
             command += 1;
             while (*(command++) == ' ') {}
             sscanf(command, "%f", &pid_proportionalGain);
-          } else if (len >= 1 && streqi(command, "i")) {
+          } else if (len >= 1 && strprei(command, "i")) {
             // set pid i
 
             command += 1;
             while (*(command++) == ' ') {}
             sscanf(command, "%f", &pid_integralGain);
-          } else if (len >= 1 && streqi(command, "d")) {
+          } else if (len >= 1 && strprei(command, "d")) {
             // set pid d
 
             command += 1;
             while (*(command++) == ' ') {}
             sscanf(command, "%f", &pid_derivativeGain);
-          } else if (len >= 3 && streqi(command, "cer")) {
+          } else if (len >= 3 && strprei(command, "cer")) {
             // set pid cer
 
             command += 3;
             while (*(command++) == ' ') {}
             sscanf(command, "%f", &pid_cumulativeErrorLimit);
-          } else if (len >= 3 && streqi(command, "iat")) {
+          } else if (len >= 3 && strprei(command, "iat")) {
             // set pid iat
 
             command += 3;
             while (*(command++) == ' ') {}
             sscanf(command, "%f", &pid_integratorActiveThreshold);
           }
-        } else if (len >= 3 && streqi(command, "trim")) {
+        } else if (len >= 3 && strprei(command, "trim")) {
           // set trim
 
           command += 4;
           while (*(command++) == ' ') {}
-          if (len >= 1 && streqi(command, "h")) {
+          if (len >= 1 && strprei(command, "h")) {
             // set trim h
 
             command += 1;
             while (*(command++) == ' ') {}
             sscanf(command, "%f", &imu_trimHeading);
-          } else if (len >= 1 && streqi(command, "r")) {
+          } else if (len >= 1 && strprei(command, "r")) {
             // set trim r
 
             command += 1;
             while (*(command++) == ' ') {}
             sscanf(command, "%f", &imu_trimRoll);
-          } else if (len >= 1 && streqi(command, "p")) {
+          } else if (len >= 1 && strprei(command, "p")) {
             // set trim p
 
             command += 1;
@@ -499,8 +497,8 @@ int main(void) {
     float pitchOffset = imu_trimPitch;
 
     float heading = vector.x - headingOffset;
-    float roll = -vector.z + rollOffset;
-    float pitch = vector.y - pitchOffset;
+    float roll = vector.z - rollOffset;     // + = right wing down
+    float pitch = -vector.y + pitchOffset;  // + = nose up
 
     // float proportionalGain = (radio_rxValues[4] - 1000.f) / 1000.f;
     // float derivativeGain = (radio_rxValues[5] - 1000.f) / 1000.f;
@@ -634,11 +632,11 @@ int main(void) {
     } else {
       float basePower = altCommand / 1000.f;
 
-      int_fast16_t rollCommand = 1500 - radio_rxValues[0];  // Channel 1 = right joystick horizontal
+      int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
       if (rollCommand > -RADIO_DEADZONE && rollCommand < RADIO_DEADZONE) rollCommand = 0;
       float targetRoll = rollCommand * targetAngleLimit / 500.f;
 
-      int_fast16_t pitchCommand = radio_rxValues[1] - 1500;  // Channel 2 = right joystick vertical
+      int_fast16_t pitchCommand = 1500 - radio_rxValues[1];  // Channel 2 = right joystick vertical
       if (pitchCommand > -RADIO_DEADZONE && pitchCommand < RADIO_DEADZONE) pitchCommand = 0;
       float targetPitch = pitchCommand * targetAngleLimit / 500.f;
 
@@ -675,10 +673,10 @@ int main(void) {
       float cosineLossCorrection = 1.f / (cosf(roll / 180.f * M_PI) * cosf(pitch / 180.f * M_PI));
       if (isnanf(cosineLossCorrection) || isinff(cosineLossCorrection)) { cosineLossCorrection = 1.f; }
 
-      float motor1Power_FL = basePower * cosineLossCorrection - rollCorrection - pitchCorrection + yaw;
-      float motor2Power_RR = basePower * cosineLossCorrection + rollCorrection + pitchCorrection + yaw;
-      float motor3Power_FR = basePower * cosineLossCorrection + rollCorrection - pitchCorrection - yaw;
-      float motor4Power_RL = basePower * cosineLossCorrection - rollCorrection + pitchCorrection - yaw;
+      float motor1Power_FL = basePower * cosineLossCorrection + rollCorrection + pitchCorrection + yaw;
+      float motor2Power_RR = basePower * cosineLossCorrection - rollCorrection - pitchCorrection + yaw;
+      float motor3Power_FR = basePower * cosineLossCorrection - rollCorrection + pitchCorrection - yaw;
+      float motor4Power_RL = basePower * cosineLossCorrection + rollCorrection - pitchCorrection - yaw;
 
       pid_lastRollError = rollError;
       pid_lastPitchError = pitchError;
