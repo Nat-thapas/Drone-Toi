@@ -134,11 +134,6 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 static int_fast32_t precisionTimer_acc_us = 0;
 
-// Channel 1, 2, 4: Value that is within +- deadzone of middle (1500) will be set to middle (1500)
-// Channel 3: Value that is within +- deadzone of min (1000) or max (2000) will be set to min or max
-static int_fast16_t radio_deadZone = 25;
-static int_fast16_t radio_consecutiveErrors = 0;
-
 static int_fast32_t telemetry_interval = 25000;  // us.
 static int_fast32_t telemetry_lastTransmission_us = 0;
 static int_fast32_t telemetry_mavgProcTime = -1;
@@ -171,6 +166,10 @@ static int_fast16_t radio_rxValues[10] = {
     1000,
     1000,
 };
+// Channel 1, 2, 4: Value that is within +- deadzone of middle (1500) will be set to middle (1500)
+// Channel 3: Value that is within +- deadzone of min (1000) or max (2000) will be set to min or max
+static int_fast16_t radio_deadZone = 25;
+static int_fast16_t radio_consecutiveErrors = 0;
 static const float radio_targetAngleLimits[3] = {5.f, 10.f, 30.f};
 
 static uint32_t batt_adcRawValue = 0;
@@ -506,6 +505,9 @@ int main(void) {
     // Tri-state switch (third from left)
     float targetAngleLimit = radio_targetAngleLimits[radio_parseTriStateSwitch(radio_rxValues[8])];
 
+    // Second from left switch, up = 1000 = FA on, down = 2000 = FA off
+    bool faDisabled = radio_parseBiStateSwitch(radio_rxValues[7]);
+
     // float rollOffset = (radio_rxValues[5] - 1500.f) / 100.f;
     // float pitchOffset = (radio_rxValues[4] - 1500.f) / 100.f;
     float headingOffset = imu_trimHeading;
@@ -523,7 +525,101 @@ int main(void) {
     float derivativeGain = pid_derivativeGain;
 
     int_fast16_t altCommand = radio_rxValues[2] - 1000;  // Channel 3 = left joystick vertical
-    if (altCommand < radio_deadZone) {
+    altCommand = altCommand <= radio_deadZone ? 0 : (altCommand >= 1000 - radio_deadZone) ? 1000 : altCommand;
+
+    if (faDisabled) {
+      pid_lastRollError = NAN;
+      pid_lastPitchError = NAN;
+      pid_cumulativeRollError = 0.f;
+      pid_cumulativePitchError = 0.f;
+
+      float basePower = altCommand / 1000.f;
+
+      int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
+      rollCommand = rollCommand >= -radio_deadZone && rollCommand <= radio_deadZone ? 0 : rollCommand;
+      float roll = rollCommand * targetAngleLimit / 500.f;
+
+      int_fast16_t pitchCommand = 1500 - radio_rxValues[1];  // Channel 2 = right joystick vertical
+      pitchCommand = pitchCommand >= -radio_deadZone && pitchCommand <= radio_deadZone ? 0 : pitchCommand;
+      float pitch = pitchCommand * targetAngleLimit / 500.f;
+
+      int_fast16_t yawCommand = radio_rxValues[3] - 1500;  // Channel 4 = left joystick horizontal
+      yawCommand = yawCommand >= -radio_deadZone && yawCommand <= radio_deadZone ? 0 : yawCommand;
+      float yaw = yawCommand * targetAngleLimit / 5000.f;
+
+      float motor1Power_FL = basePower + yaw;
+      float motor2Power_RR = basePower + yaw;
+      float motor3Power_FR = basePower - yaw;
+      float motor4Power_RL = basePower - yaw;
+
+      int_fast16_t motor1Pwm_FL = motor1Power_FL * 1000.f + 1000.f;
+      int_fast16_t motor2Pwm_RR = motor2Power_RR * 1000.f + 1000.f;
+      int_fast16_t motor3Pwm_FR = motor3Power_FR * 1000.f + 1000.f;
+      int_fast16_t motor4Pwm_RL = motor4Power_RL * 1000.f + 1000.f;
+
+      motor1Pwm_FL = motor1Pwm_FL < 1000 ? 1000 : (motor1Pwm_FL > 2000 ? 2000 : motor1Pwm_FL);
+      motor2Pwm_RR = motor2Pwm_RR < 1000 ? 1000 : (motor2Pwm_RR > 2000 ? 2000 : motor2Pwm_RR);
+      motor3Pwm_FR = motor3Pwm_FR < 1000 ? 1000 : (motor3Pwm_FR > 2000 ? 2000 : motor3Pwm_FR);
+      motor4Pwm_RL = motor4Pwm_RL < 1000 ? 1000 : (motor4Pwm_RL > 2000 ? 2000 : motor4Pwm_RL);
+
+      MOTOR_1_FL_PWM_CCR = motor1Pwm_FL;
+      MOTOR_2_RR_PWM_CCR = motor2Pwm_RR;
+      MOTOR_3_FR_PWM_CCR = motor3Pwm_FR;
+      MOTOR_4_RL_PWM_CCR = motor4Pwm_RL;
+
+      if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
+        Serial_Transmitf_DMA(
+            telemetry_format,
+            radio_rxValues[0],
+            radio_rxValues[1],
+            radio_rxValues[2],
+            radio_rxValues[3],
+            radio_rxValues[4],
+            radio_rxValues[5],
+            radio_rxValues[6],
+            radio_rxValues[7],
+            radio_rxValues[8],
+            radio_rxValues[9],
+            headingOffset,
+            rollOffset,
+            pitchOffset,
+            proportionalGain,
+            integralGain,
+            derivativeGain,
+            0.f,
+            0.f,
+            0.f,
+            heading,
+            roll,
+            pitch,
+            0.f,
+            0.f,
+            0.f,
+            0.f,
+            0.f,
+            0.f,
+            temperature,
+            pressure,
+            motor1Power_FL * 100,
+            motor3Power_FR * 100,
+            motor4Power_RL * 100,
+            motor2Power_RR * 100,
+            batt_adcRawValue * BATT_VOLTAGE_MULTIPLIER / 0xFFF,
+            telemetry_mavgProcTime / 1000.f,
+            command_rxBuffer
+        );
+
+        if (command_ready) { command_handle(); }
+
+        telemetry_lastTransmission_us = currentTick_us;
+        int_fast32_t procTime = GetTickPrecise() - currentTick_us;
+        if (telemetry_mavgProcTime == -1) {
+          telemetry_mavgProcTime = procTime;
+        } else {
+          telemetry_mavgProcTime = (telemetry_mavgProcTime * 7 / 8) + (procTime / 8);
+        }
+      }
+    } else if (altCommand == 0) {
       pid_lastRollError = NAN;
       pid_lastPitchError = NAN;
       pid_cumulativeRollError = 0.f;
@@ -586,7 +682,7 @@ int main(void) {
           telemetry_mavgProcTime = (telemetry_mavgProcTime * 7 / 8) + (procTime / 8);
         }
       }
-    } else if (altCommand > 1000 - radio_deadZone) {
+    } else if (altCommand == 1000) {
       pid_lastRollError = NAN;
       pid_lastPitchError = NAN;
       pid_cumulativeRollError = 0.f;
@@ -653,16 +749,16 @@ int main(void) {
       float basePower = altCommand / 1000.f;
 
       int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
-      if (rollCommand > -radio_deadZone && rollCommand < radio_deadZone) rollCommand = 0;
+      rollCommand = rollCommand >= -radio_deadZone && rollCommand <= radio_deadZone ? 0 : rollCommand;
       float targetRoll = rollCommand * targetAngleLimit / 500.f;
 
       int_fast16_t pitchCommand = 1500 - radio_rxValues[1];  // Channel 2 = right joystick vertical
-      if (pitchCommand > -radio_deadZone && pitchCommand < radio_deadZone) pitchCommand = 0;
+      pitchCommand = pitchCommand >= -radio_deadZone && pitchCommand <= radio_deadZone ? 0 : pitchCommand;
       float targetPitch = pitchCommand * targetAngleLimit / 500.f;
 
       int_fast16_t yawCommand = radio_rxValues[3] - 1500;  // Channel 4 = left joystick horizontal
-      if (yawCommand > -radio_deadZone && yawCommand < radio_deadZone) yawCommand = 0;
-      float yaw = yawCommand * targetAngleLimit / 50000.f;
+      yawCommand = yawCommand >= -radio_deadZone && yawCommand <= radio_deadZone ? 0 : yawCommand;
+      float yaw = yawCommand * targetAngleLimit / 5000.f;
 
       float delta = deltaTime_us / 1000000.f;
 
