@@ -43,8 +43,6 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define TELEMETRY_INTERVAL 250000  // us.
-
 #define RADIO_RX_UART huart1
 #define RADIO_TELEM_UART huart2
 #define SERIAL_UART huart3
@@ -61,12 +59,6 @@
 
 // After threshold error 1 byte will be skipped to try to align incoming data
 #define RADIO_CONSECUTIVE_ERROR_THRESHOLD 3
-
-// Channel 1, 2, 4: Value that is within +- deadzone of middle (1500) will be set to middle (1500)
-// Channel 3: Value that is within +- deadzone of min (1000) or max (2000) will be set to min or max
-#define RADIO_DEADZONE 25
-
-#define PID_LOOP_MIN_INTERVAL 10000  // us.
 
 #define I2C_PERIPHERAL_INIT_RETRY_LIMIT 5
 
@@ -140,16 +132,20 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 
-int_fast32_t precisionTimer_acc_us = 0;
+static int_fast32_t precisionTimer_acc_us = 0;
 
-int_fast16_t radio_consecutiveErrors = 0;
+// Channel 1, 2, 4: Value that is within +- deadzone of middle (1500) will be set to middle (1500)
+// Channel 3: Value that is within +- deadzone of min (1000) or max (2000) will be set to min or max
+static int_fast16_t radio_deadZone = 25;
+static int_fast16_t radio_consecutiveErrors = 0;
 
-int_fast32_t telemetry_lastTransmission_us = 0;
-int_fast32_t telemetry_mavgProcTime = -1;
-const char telemetry_format[] =
+static int_fast32_t telemetry_interval = 25000;  // us.
+static int_fast32_t telemetry_lastTransmission_us = 0;
+static int_fast32_t telemetry_mavgProcTime = -1;
+static const char telemetry_format[] =
     "Radio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
-    "Offsets     : %2.2fH %2.2fR %2.2fP\r\n"
-    "PID Gains   : %1.3fP %1.3fI %1.3fD\r\n"
+    "Trims       : %2.4fH %2.4fR %2.4fP\r\n"
+    "PID Gains   : %1.5fP %1.5fI %1.5fD\r\n"
     "Target      : %4.2fY %4.2fR %4.2fP\r\n"
     "Orientation : %4.2fH %4.2fR %4.2fP\r\n"
     "Errors      : %2.4fR %2.4fP\r\n"
@@ -162,8 +158,8 @@ const char telemetry_format[] =
     "--------------------------------------------------------------------------------\r\n"
     "> %s\r\n";
 
-uint8_t radio_rxBuffer[32] = {};
-int_fast16_t radio_rxValues[10] = {
+static uint8_t radio_rxBuffer[32] = {};
+static int_fast16_t radio_rxValues[10] = {
     1500,
     1500,
     1000,
@@ -175,34 +171,35 @@ int_fast16_t radio_rxValues[10] = {
     1000,
     1000,
 };
-const float radio_targetAngleLimits[3] = {5.f, 10.f, 30.f};
+static const float radio_targetAngleLimits[3] = {5.f, 10.f, 30.f};
 
-uint32_t batt_adcRawValue = 0;
+static uint32_t batt_adcRawValue = 0;
 
-float imu_trimHeading = 0.f;
-float imu_trimRoll = -0.6f;
-float imu_trimPitch = -1.f;
+static float imu_trimHeading = 0.f;
+static float imu_trimRoll = -0.6f;
+static float imu_trimPitch = -1.f;
 
-int_fast32_t pid_lastLoopTime_us = 0;
-float pid_proportionalGain = 0.3f;
-float pid_integralGain = 0.f;
-float pid_derivativeGain = 0.f;
-float pid_cumulativeErrorLimit = 25.f;
+static int_fast32_t pid_minLoopPeriod = 10000;  // us.
+static int_fast32_t pid_lastLoopTime_us = 0;
+static float pid_proportionalGain = 0.3f;
+static float pid_integralGain = 0.f;
+static float pid_derivativeGain = 0.f;
+static float pid_cumulativeErrorLimit = 25.f;
 // Integrator will only be active if current error is less than or equal to threshold degrees
-float pid_integratorActiveThreshold = 2.5f;
-float pid_lastRollError = NAN;
-float pid_lastPitchError = NAN;
-float pid_cumulativeRollError = 0.f;
-float pid_cumulativePitchError = 0.f;
+static float pid_integratorActiveThreshold = 2.5f;
+static float pid_lastRollError = NAN;
+static float pid_lastPitchError = NAN;
+static float pid_cumulativeRollError = 0.f;
+static float pid_cumulativePitchError = 0.f;
 
-uint8_t serial_rxBuffer;
-uint8_t wlser_rxBuffer;
+static uint8_t serial_rxBuffer;
+static uint8_t wlser_rxBuffer;
 
-char command_rxBuffer[256] = {};
-size_t command_rxBufferSize = 0;
-bool command_ready = false;
+static char command_rxBuffer[256] = {};
+static size_t command_rxBufferSize = 0;
+static bool command_ready = false;
 
-BMP280_HandleTypedef bmp280;
+static BMP280_HandleTypedef bmp280;
 
 /* USER CODE END PV */
 
@@ -229,7 +226,7 @@ static void MX_TIM2_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-inline int_fast32_t GetTickPrecise() {
+static inline int_fast32_t GetTickPrecise() {
   return precisionTimer_acc_us + PRECISION_TIMER_COUNT;
 }
 
@@ -253,16 +250,126 @@ void Serial_Transmitln_DMA(char *str) {
   Serial_Transmitf_DMA("%s\r\n", str);
 }
 
-inline int_fast8_t radio_parseTriStateSwitch(int_fast16_t value) {
+static inline int_fast8_t radio_parseTriStateSwitch(int_fast16_t value) {
   return value < 1250 ? 0 : (value > 1750 ? 2 : 1);
 }
 
-inline bool radio_parseBiStateSwitch(int_fast16_t value) {
+static inline bool radio_parseBiStateSwitch(int_fast16_t value) {
   return value > 1500;
 }
 
-inline bool strprei(const char *str, const char *pre) {
+static inline bool strprei(const char *str, const char *pre) {
   return strncmpi(str, pre, strlen(pre)) == 0;
+}
+
+static void command_handle() {
+  char *command = command_rxBuffer;
+  size_t len = command_rxBufferSize;
+  if (len >= 4 && strprei(command, "stop")) {
+    // stop
+
+    MOTOR_1_FL_PWM_CCR = 1000u;
+    MOTOR_2_RR_PWM_CCR = 1000u;
+    MOTOR_3_FR_PWM_CCR = 1000u;
+    MOTOR_4_RL_PWM_CCR = 1000u;
+
+    char msg[] = "E-STOP Activated, shutting down...\r\n";
+    size_t len = strlen(msg);
+
+    while (HAL_UART_Transmit(&SERIAL_UART, (uint8_t *)msg, len, 250) == HAL_BUSY);
+    while (HAL_UART_Transmit(&WLSER_UART, (uint8_t *)msg, len, 250) == HAL_BUSY);
+
+    Error_Handler();
+  } else if (len >= 3 && strprei(command, "set")) {
+    // set
+    command += 3;
+    while (*(command++) == ' ') {}
+
+    if (len >= 3 && strprei(command, "pid")) {
+      // set pid
+      command += 3;
+      while (*(command++) == ' ') {}
+
+      if (len >= 1 && strprei(command, "p")) {
+        // set pid p
+        command += 1;
+        while (*(command++) == ' ') {}
+        sscanf(command, "%f", &pid_proportionalGain);
+      } else if (len >= 1 && strprei(command, "i")) {
+        // set pid i
+        command += 1;
+        while (*(command++) == ' ') {}
+        sscanf(command, "%f", &pid_integralGain);
+      } else if (len >= 1 && strprei(command, "d")) {
+        // set pid d
+        command += 1;
+        while (*(command++) == ' ') {}
+        sscanf(command, "%f", &pid_derivativeGain);
+      } else if (len >= 3 && strprei(command, "cel")) {
+        // set pid cel
+        command += 3;
+        while (*(command++) == ' ') {}
+        sscanf(command, "%f", &pid_cumulativeErrorLimit);
+      } else if (len >= 3 && strprei(command, "iat")) {
+        // set pid iat
+        command += 3;
+        while (*(command++) == ' ') {}
+        sscanf(command, "%f", &pid_integratorActiveThreshold);
+      } else if (len >= 3 && strprei(command, "mli")) {
+        // set pid mli
+        command += 3;
+        while (*(command++) == ' ') {}
+        sscanf(command, "%d", &pid_minLoopPeriod);
+      }
+    } else if (len >= 4 && strprei(command, "trim")) {
+      // set trim
+      command += 4;
+      while (*(command++) == ' ') {}
+
+      if (len >= 1 && strprei(command, "h")) {
+        // set trim h
+        command += 1;
+        while (*(command++) == ' ') {}
+        sscanf(command, "%f", &imu_trimHeading);
+      } else if (len >= 1 && strprei(command, "r")) {
+        // set trim r
+        command += 1;
+        while (*(command++) == ' ') {}
+        sscanf(command, "%f", &imu_trimRoll);
+      } else if (len >= 1 && strprei(command, "p")) {
+        // set trim p
+        command += 1;
+        while (*(command++) == ' ') {}
+        sscanf(command, "%f", &imu_trimPitch);
+      }
+    } else if (len >= 5 && strprei(command, "radio")) {
+      // set radio
+      command += 5;
+      while (*(command++) == ' ') {}
+
+      if (len >= 8 && strprei(command, "deadzone")) {
+        // set radio deadzone
+        command += 8;
+        while (*(command++) == ' ') {}
+        sscanf(command, "%d", &radio_deadZone);
+      }
+    } else if (len >= 9 && strprei(command, "telemetry")) {
+      // set telemetry
+      command += 9;
+      while (*(command++) == ' ') {}
+
+      if (len >= 8 && strprei(command, "interval")) {
+        // set telemetry interval
+        command += 8;
+        while (*(command++) == ' ') {}
+        sscanf(command, "%d", &telemetry_interval);
+      }
+    }
+  }
+
+  command_ready = false;
+  command_rxBufferSize = 0;
+  command_rxBuffer[0] = 0x00;
 }
 
 /* USER CODE END 0 */
@@ -383,101 +490,10 @@ int main(void) {
     /* USER CODE BEGIN 3 */
     HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
-    if (command_ready) {
-      char *command = command_rxBuffer;
-      size_t len = command_rxBufferSize;
-      if (len >= 4 && strprei(command, "stop")) {
-        // stop
-
-        MOTOR_1_FL_PWM_CCR = 1000u;
-        MOTOR_2_RR_PWM_CCR = 1000u;
-        MOTOR_3_FR_PWM_CCR = 1000u;
-        MOTOR_4_RL_PWM_CCR = 1000u;
-
-        char msg[] = "E-STOP Activated, shutting down...\r\n";
-        size_t len = strlen(msg);
-
-        while (HAL_UART_Transmit(&SERIAL_UART, (uint8_t *)msg, len, 250) == HAL_BUSY);
-        while (HAL_UART_Transmit(&WLSER_UART, (uint8_t *)msg, len, 250) == HAL_BUSY);
-
-        Error_Handler();
-      } else if (len >= 3 && strprei(command, "set")) {
-        // set
-
-        command += 3;
-        while (*(command++) == ' ') {}
-        if (len >= 3 && strprei(command, "pid")) {
-          // set pid
-
-          command += 3;
-          while (*(command++) == ' ') {}
-          if (len >= 1 && strprei(command, "p")) {
-            // set pid p
-
-            command += 1;
-            while (*(command++) == ' ') {}
-            sscanf(command, "%f", &pid_proportionalGain);
-          } else if (len >= 1 && strprei(command, "i")) {
-            // set pid i
-
-            command += 1;
-            while (*(command++) == ' ') {}
-            sscanf(command, "%f", &pid_integralGain);
-          } else if (len >= 1 && strprei(command, "d")) {
-            // set pid d
-
-            command += 1;
-            while (*(command++) == ' ') {}
-            sscanf(command, "%f", &pid_derivativeGain);
-          } else if (len >= 3 && strprei(command, "cer")) {
-            // set pid cer
-
-            command += 3;
-            while (*(command++) == ' ') {}
-            sscanf(command, "%f", &pid_cumulativeErrorLimit);
-          } else if (len >= 3 && strprei(command, "iat")) {
-            // set pid iat
-
-            command += 3;
-            while (*(command++) == ' ') {}
-            sscanf(command, "%f", &pid_integratorActiveThreshold);
-          }
-        } else if (len >= 3 && strprei(command, "trim")) {
-          // set trim
-
-          command += 4;
-          while (*(command++) == ' ') {}
-          if (len >= 1 && strprei(command, "h")) {
-            // set trim h
-
-            command += 1;
-            while (*(command++) == ' ') {}
-            sscanf(command, "%f", &imu_trimHeading);
-          } else if (len >= 1 && strprei(command, "r")) {
-            // set trim r
-
-            command += 1;
-            while (*(command++) == ' ') {}
-            sscanf(command, "%f", &imu_trimRoll);
-          } else if (len >= 1 && strprei(command, "p")) {
-            // set trim p
-
-            command += 1;
-            while (*(command++) == ' ') {}
-            sscanf(command, "%f", &imu_trimPitch);
-          }
-        }
-      }
-
-      command_ready = false;
-      command_rxBufferSize = 0;
-      command_rxBuffer[0] = 0x00;
-    }
-
     int_fast32_t currentTick_us = GetTickPrecise();
     int_fast32_t deltaTime_us = currentTick_us - pid_lastLoopTime_us;
 
-    while (deltaTime_us < PID_LOOP_MIN_INTERVAL) {
+    while (deltaTime_us < pid_minLoopPeriod) {
       currentTick_us = GetTickPrecise();
       deltaTime_us = currentTick_us - pid_lastLoopTime_us;
     }
@@ -507,7 +523,7 @@ int main(void) {
     float derivativeGain = pid_derivativeGain;
 
     int_fast16_t altCommand = radio_rxValues[2] - 1000;  // Channel 3 = left joystick vertical
-    if (altCommand < RADIO_DEADZONE) {
+    if (altCommand < radio_deadZone) {
       pid_lastRollError = NAN;
       pid_lastPitchError = NAN;
       pid_cumulativeRollError = 0.f;
@@ -518,7 +534,7 @@ int main(void) {
       MOTOR_3_FR_PWM_CCR = 1000u;
       MOTOR_4_RL_PWM_CCR = 1000u;
 
-      if (currentTick_us - telemetry_lastTransmission_us > TELEMETRY_INTERVAL) {
+      if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
         Serial_Transmitf_DMA(
             telemetry_format,
             radio_rxValues[0],
@@ -560,6 +576,8 @@ int main(void) {
             command_rxBuffer
         );
 
+        if (command_ready) { command_handle(); }
+
         telemetry_lastTransmission_us = currentTick_us;
         int_fast32_t procTime = GetTickPrecise() - currentTick_us;
         if (telemetry_mavgProcTime == -1) {
@@ -568,7 +586,7 @@ int main(void) {
           telemetry_mavgProcTime = (telemetry_mavgProcTime * 7 / 8) + (procTime / 8);
         }
       }
-    } else if (altCommand > 1000 - RADIO_DEADZONE) {
+    } else if (altCommand > 1000 - radio_deadZone) {
       pid_lastRollError = NAN;
       pid_lastPitchError = NAN;
       pid_cumulativeRollError = 0.f;
@@ -579,7 +597,7 @@ int main(void) {
       MOTOR_3_FR_PWM_CCR = 2000u;
       MOTOR_4_RL_PWM_CCR = 2000u;
 
-      if (currentTick_us - telemetry_lastTransmission_us > TELEMETRY_INTERVAL) {
+      if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
         Serial_Transmitf_DMA(
             telemetry_format,
             radio_rxValues[0],
@@ -620,6 +638,8 @@ int main(void) {
             telemetry_mavgProcTime / 1000.f,
             command_rxBuffer
         );
+
+        if (command_ready) { command_handle(); }
 
         telemetry_lastTransmission_us = currentTick_us;
         int_fast32_t procTime = GetTickPrecise() - currentTick_us;
@@ -633,15 +653,15 @@ int main(void) {
       float basePower = altCommand / 1000.f;
 
       int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
-      if (rollCommand > -RADIO_DEADZONE && rollCommand < RADIO_DEADZONE) rollCommand = 0;
+      if (rollCommand > -radio_deadZone && rollCommand < radio_deadZone) rollCommand = 0;
       float targetRoll = rollCommand * targetAngleLimit / 500.f;
 
       int_fast16_t pitchCommand = 1500 - radio_rxValues[1];  // Channel 2 = right joystick vertical
-      if (pitchCommand > -RADIO_DEADZONE && pitchCommand < RADIO_DEADZONE) pitchCommand = 0;
+      if (pitchCommand > -radio_deadZone && pitchCommand < radio_deadZone) pitchCommand = 0;
       float targetPitch = pitchCommand * targetAngleLimit / 500.f;
 
       int_fast16_t yawCommand = radio_rxValues[3] - 1500;  // Channel 4 = left joystick horizontal
-      if (yawCommand > -RADIO_DEADZONE && yawCommand < RADIO_DEADZONE) yawCommand = 0;
+      if (yawCommand > -radio_deadZone && yawCommand < radio_deadZone) yawCommand = 0;
       float yaw = yawCommand * targetAngleLimit / 50000.f;
 
       float delta = deltaTime_us / 1000000.f;
@@ -649,8 +669,16 @@ int main(void) {
       float rollError = targetRoll - roll;
       float pitchError = targetPitch - pitch;
 
-      if (rollError <= pid_integratorActiveThreshold) { pid_cumulativeRollError += rollError * delta; }
-      if (pitchError <= pid_integratorActiveThreshold) { pid_cumulativePitchError += pitchError * delta; }
+      if (rollError <= pid_integratorActiveThreshold) {
+        pid_cumulativeRollError += rollError * delta;
+        pid_cumulativeRollError =
+            pid_cumulativeRollError > pid_cumulativeErrorLimit ? pid_cumulativeErrorLimit : pid_cumulativeRollError;
+      }
+      if (pitchError <= pid_integratorActiveThreshold) {
+        pid_cumulativePitchError += pitchError * delta;
+        pid_cumulativePitchError =
+            pid_cumulativePitchError > pid_cumulativeErrorLimit ? pid_cumulativeErrorLimit : pid_cumulativePitchError;
+      }
 
       float cumulativeRollError = pid_cumulativeRollError;
       float cumulativePitchError = pid_cumulativePitchError;
@@ -696,7 +724,7 @@ int main(void) {
       MOTOR_3_FR_PWM_CCR = motor3Pwm_FR;
       MOTOR_4_RL_PWM_CCR = motor4Pwm_RL;
 
-      if (currentTick_us - telemetry_lastTransmission_us > TELEMETRY_INTERVAL) {
+      if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
         Serial_Transmitf_DMA(
             telemetry_format,
             radio_rxValues[0],
@@ -737,6 +765,8 @@ int main(void) {
             telemetry_mavgProcTime / 1000.f,
             command_rxBuffer
         );
+
+        if (command_ready) { command_handle(); }
 
         telemetry_lastTransmission_us = currentTick_us;
         int_fast32_t procTime = GetTickPrecise() - currentTick_us;
