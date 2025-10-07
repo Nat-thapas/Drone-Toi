@@ -75,6 +75,8 @@
 #define BATT_SENSOR_ADC hadc1
 #define BATT_VOLTAGE_MULTIPLIER 19.03846f
 
+#define YAW_SENSITIVITY_MULTIPLIER 0.2f
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -137,21 +139,6 @@ static int_fast32_t precisionTimer_acc_us = 0;
 static int_fast32_t telemetry_interval = 25000;  // us.
 static int_fast32_t telemetry_lastTransmission_us = 0;
 static int_fast32_t telemetry_mavgProcTime = -1;
-static const char telemetry_format[] =
-    "Radio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
-    "Trims       : %2.4fH %2.4fR %2.4fP\r\n"
-    "PID Gains   : %1.5fP %1.5fI %1.5fD\r\n"
-    "Target      : %4.2fY %4.2fR %4.2fP\r\n"
-    "Orientation : %4.2fH %4.2fR %4.2fP\r\n"
-    "Errors      : %2.4fR %2.4fP\r\n"
-    "Corrections : %1.5fY %1.5fR %1.5fP %1.5fCos \r\n"
-    "Atmosphere  : %.2fC, %.2fPa\r\n"
-    "Powers      : %3.1f%% %3.1f%%\r\n"
-    "              %3.1f%% %3.1f%%\r\n"
-    "Batt volt.  : %.2f V\r\n"
-    "mspi        : %.2f\r\n"
-    "--------------------------------------------------------------------------------\r\n"
-    "> %s\r\n";
 
 static uint8_t radio_rxBuffer[32] = {};
 static int_fast16_t radio_rxValues[10] = {
@@ -508,15 +495,15 @@ int main(void) {
     // Second from left switch, up = 1000 = FA on, down = 2000 = FA off
     bool faDisabled = radio_parseBiStateSwitch(radio_rxValues[7]);
 
-    // float rollOffset = (radio_rxValues[5] - 1500.f) / 100.f;
-    // float pitchOffset = (radio_rxValues[4] - 1500.f) / 100.f;
-    float headingOffset = imu_trimHeading;
-    float rollOffset = imu_trimRoll;
-    float pitchOffset = imu_trimPitch;
+    // float pitchTrim = (radio_rxValues[4] - 1500.f) / 100.f;
+    // float rollTrim = (radio_rxValues[5] - 1500.f) / 100.f;
+    float headingTrim = imu_trimHeading;
+    float pitchTrim = imu_trimPitch;
+    float rollTrim = imu_trimRoll;
 
-    float heading = vector.x - headingOffset;
-    float roll = vector.z - rollOffset;     // + = right wing down
-    float pitch = -vector.y + pitchOffset;  // + = nose up
+    float heading = vector.x - headingTrim;
+    float pitch = -vector.y + pitchTrim;  // + = nose up
+    float roll = vector.z - rollTrim;     // + = right wing down
 
     // float proportionalGain = (radio_rxValues[4] - 1000.f) / 1000.f;
     // float derivativeGain = (radio_rxValues[5] - 1000.f) / 1000.f;
@@ -524,354 +511,194 @@ int main(void) {
     float integralGain = pid_integralGain;
     float derivativeGain = pid_derivativeGain;
 
+    float targetYaw = 0.f, targetPitch = 0.f, targetRoll = 0.f;
+    float yawError = 0.f, pitchError = 0.f, rollError = 0.f;
+    float yawCorrection = 0.f, pitchCorrection = 0.f, rollCorrection = 0.f, cosineLossCorrection = 0.f;
+    float motor1Power_FL = 0.f, motor2Power_RR = 0.f, motor3Power_FR = 0.f, motor4Power_RL = 0.f;
+
     int_fast16_t altCommand = radio_rxValues[2] - 1000;  // Channel 3 = left joystick vertical
     altCommand = altCommand <= radio_deadZone ? 0 : (altCommand >= 1000 - radio_deadZone) ? 1000 : altCommand;
 
+    int_fast16_t yawCommand = radio_rxValues[3] - 1500;  // Channel 4 = left joystick horizontal
+    yawCommand = yawCommand >= -radio_deadZone && yawCommand <= radio_deadZone ? 0 : yawCommand;
+
+    int_fast16_t pitchCommand = 1500 - radio_rxValues[1];  // Channel 2 = right joystick vertical
+    pitchCommand = pitchCommand >= -radio_deadZone && pitchCommand <= radio_deadZone ? 0 : pitchCommand;
+
+    int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
+    rollCommand = rollCommand >= -radio_deadZone && rollCommand <= radio_deadZone ? 0 : rollCommand;
+
     if (faDisabled) {
-      pid_lastRollError = NAN;
       pid_lastPitchError = NAN;
-      pid_cumulativeRollError = 0.f;
+      pid_lastRollError = NAN;
       pid_cumulativePitchError = 0.f;
+      pid_cumulativeRollError = 0.f;
 
       float basePower = altCommand / 1000.f;
 
-      int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
-      rollCommand = rollCommand >= -radio_deadZone && rollCommand <= radio_deadZone ? 0 : rollCommand;
-      float roll = rollCommand * targetAngleLimit / 500.f;
+      yawCorrection = yawCommand * targetAngleLimit * YAW_SENSITIVITY_MULTIPLIER / 500.f;
+      pitchCorrection = pitchCommand * targetAngleLimit / 500.f;
+      rollCorrection = rollCommand * targetAngleLimit / 500.f;
 
-      int_fast16_t pitchCommand = 1500 - radio_rxValues[1];  // Channel 2 = right joystick vertical
-      pitchCommand = pitchCommand >= -radio_deadZone && pitchCommand <= radio_deadZone ? 0 : pitchCommand;
-      float pitch = pitchCommand * targetAngleLimit / 500.f;
-
-      int_fast16_t yawCommand = radio_rxValues[3] - 1500;  // Channel 4 = left joystick horizontal
-      yawCommand = yawCommand >= -radio_deadZone && yawCommand <= radio_deadZone ? 0 : yawCommand;
-      float yaw = yawCommand * targetAngleLimit / 5000.f;
-
-      float motor1Power_FL = basePower + yaw;
-      float motor2Power_RR = basePower + yaw;
-      float motor3Power_FR = basePower - yaw;
-      float motor4Power_RL = basePower - yaw;
-
-      int_fast16_t motor1Pwm_FL = motor1Power_FL * 1000.f + 1000.f;
-      int_fast16_t motor2Pwm_RR = motor2Power_RR * 1000.f + 1000.f;
-      int_fast16_t motor3Pwm_FR = motor3Power_FR * 1000.f + 1000.f;
-      int_fast16_t motor4Pwm_RL = motor4Power_RL * 1000.f + 1000.f;
-
-      motor1Pwm_FL = motor1Pwm_FL < 1000 ? 1000 : (motor1Pwm_FL > 2000 ? 2000 : motor1Pwm_FL);
-      motor2Pwm_RR = motor2Pwm_RR < 1000 ? 1000 : (motor2Pwm_RR > 2000 ? 2000 : motor2Pwm_RR);
-      motor3Pwm_FR = motor3Pwm_FR < 1000 ? 1000 : (motor3Pwm_FR > 2000 ? 2000 : motor3Pwm_FR);
-      motor4Pwm_RL = motor4Pwm_RL < 1000 ? 1000 : (motor4Pwm_RL > 2000 ? 2000 : motor4Pwm_RL);
-
-      MOTOR_1_FL_PWM_CCR = motor1Pwm_FL;
-      MOTOR_2_RR_PWM_CCR = motor2Pwm_RR;
-      MOTOR_3_FR_PWM_CCR = motor3Pwm_FR;
-      MOTOR_4_RL_PWM_CCR = motor4Pwm_RL;
-
-      if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
-        Serial_Transmitf_DMA(
-            telemetry_format,
-            radio_rxValues[0],
-            radio_rxValues[1],
-            radio_rxValues[2],
-            radio_rxValues[3],
-            radio_rxValues[4],
-            radio_rxValues[5],
-            radio_rxValues[6],
-            radio_rxValues[7],
-            radio_rxValues[8],
-            radio_rxValues[9],
-            headingOffset,
-            rollOffset,
-            pitchOffset,
-            proportionalGain,
-            integralGain,
-            derivativeGain,
-            0.f,
-            0.f,
-            0.f,
-            heading,
-            roll,
-            pitch,
-            0.f,
-            0.f,
-            0.f,
-            0.f,
-            0.f,
-            0.f,
-            temperature,
-            pressure,
-            motor1Power_FL * 100,
-            motor3Power_FR * 100,
-            motor4Power_RL * 100,
-            motor2Power_RR * 100,
-            batt_adcRawValue * BATT_VOLTAGE_MULTIPLIER / 0xFFF,
-            telemetry_mavgProcTime / 1000.f,
-            command_rxBuffer
-        );
-
-        if (command_ready) { command_handle(); }
-
-        telemetry_lastTransmission_us = currentTick_us;
-        int_fast32_t procTime = GetTickPrecise() - currentTick_us;
-        if (telemetry_mavgProcTime == -1) {
-          telemetry_mavgProcTime = procTime;
-        } else {
-          telemetry_mavgProcTime = (telemetry_mavgProcTime * 7 / 8) + (procTime / 8);
-        }
-      }
+      motor1Power_FL = basePower + rollCorrection + pitchCorrection + yawCorrection;
+      motor2Power_RR = basePower - rollCorrection - pitchCorrection + yawCorrection;
+      motor3Power_FR = basePower - rollCorrection + pitchCorrection - yawCorrection;
+      motor4Power_RL = basePower + rollCorrection - pitchCorrection - yawCorrection;
     } else if (altCommand == 0) {
-      pid_lastRollError = NAN;
       pid_lastPitchError = NAN;
-      pid_cumulativeRollError = 0.f;
+      pid_lastRollError = NAN;
       pid_cumulativePitchError = 0.f;
+      pid_cumulativeRollError = 0.f;
 
-      MOTOR_1_FL_PWM_CCR = 1000u;
-      MOTOR_2_RR_PWM_CCR = 1000u;
-      MOTOR_3_FR_PWM_CCR = 1000u;
-      MOTOR_4_RL_PWM_CCR = 1000u;
-
-      if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
-        Serial_Transmitf_DMA(
-            telemetry_format,
-            radio_rxValues[0],
-            radio_rxValues[1],
-            radio_rxValues[2],
-            radio_rxValues[3],
-            radio_rxValues[4],
-            radio_rxValues[5],
-            radio_rxValues[6],
-            radio_rxValues[7],
-            radio_rxValues[8],
-            radio_rxValues[9],
-            headingOffset,
-            rollOffset,
-            pitchOffset,
-            proportionalGain,
-            integralGain,
-            derivativeGain,
-            0.f,
-            0.f,
-            0.f,
-            heading,
-            roll,
-            pitch,
-            0.f,
-            0.f,
-            0.f,
-            0.f,
-            0.f,
-            0.f,
-            temperature,
-            pressure,
-            0.f,
-            0.f,
-            0.f,
-            0.f,
-            batt_adcRawValue * BATT_VOLTAGE_MULTIPLIER / 0xFFF,
-            telemetry_mavgProcTime / 1000.f,
-            command_rxBuffer
-        );
-
-        if (command_ready) { command_handle(); }
-
-        telemetry_lastTransmission_us = currentTick_us;
-        int_fast32_t procTime = GetTickPrecise() - currentTick_us;
-        if (telemetry_mavgProcTime == -1) {
-          telemetry_mavgProcTime = procTime;
-        } else {
-          telemetry_mavgProcTime = (telemetry_mavgProcTime * 7 / 8) + (procTime / 8);
-        }
-      }
+      motor1Power_FL = 0.f;
+      motor2Power_RR = 0.f;
+      motor3Power_FR = 0.f;
+      motor4Power_RL = 0.f;
     } else if (altCommand == 1000) {
-      pid_lastRollError = NAN;
       pid_lastPitchError = NAN;
-      pid_cumulativeRollError = 0.f;
+      pid_lastRollError = NAN;
       pid_cumulativePitchError = 0.f;
+      pid_cumulativeRollError = 0.f;
 
-      MOTOR_1_FL_PWM_CCR = 2000u;
-      MOTOR_2_RR_PWM_CCR = 2000u;
-      MOTOR_3_FR_PWM_CCR = 2000u;
-      MOTOR_4_RL_PWM_CCR = 2000u;
-
-      if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
-        Serial_Transmitf_DMA(
-            telemetry_format,
-            radio_rxValues[0],
-            radio_rxValues[1],
-            radio_rxValues[2],
-            radio_rxValues[3],
-            radio_rxValues[4],
-            radio_rxValues[5],
-            radio_rxValues[6],
-            radio_rxValues[7],
-            radio_rxValues[8],
-            radio_rxValues[9],
-            headingOffset,
-            rollOffset,
-            pitchOffset,
-            proportionalGain,
-            integralGain,
-            derivativeGain,
-            0.f,
-            0.f,
-            0.f,
-            heading,
-            roll,
-            pitch,
-            0.f,
-            0.f,
-            0.f,
-            0.f,
-            0.f,
-            0.f,
-            temperature,
-            pressure,
-            100.f,
-            100.f,
-            100.f,
-            100.f,
-            batt_adcRawValue * BATT_VOLTAGE_MULTIPLIER / 0xFFF,
-            telemetry_mavgProcTime / 1000.f,
-            command_rxBuffer
-        );
-
-        if (command_ready) { command_handle(); }
-
-        telemetry_lastTransmission_us = currentTick_us;
-        int_fast32_t procTime = GetTickPrecise() - currentTick_us;
-        if (telemetry_mavgProcTime == -1) {
-          telemetry_mavgProcTime = procTime;
-        } else {
-          telemetry_mavgProcTime = (telemetry_mavgProcTime * 7 / 8) + (procTime / 8);
-        }
-      }
+      motor1Power_FL = 1.f;
+      motor2Power_RR = 1.f;
+      motor3Power_FR = 1.f;
+      motor4Power_RL = 1.f;
     } else {
       float basePower = altCommand / 1000.f;
 
-      int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
-      rollCommand = rollCommand >= -radio_deadZone && rollCommand <= radio_deadZone ? 0 : rollCommand;
-      float targetRoll = rollCommand * targetAngleLimit / 500.f;
-
-      int_fast16_t pitchCommand = 1500 - radio_rxValues[1];  // Channel 2 = right joystick vertical
-      pitchCommand = pitchCommand >= -radio_deadZone && pitchCommand <= radio_deadZone ? 0 : pitchCommand;
-      float targetPitch = pitchCommand * targetAngleLimit / 500.f;
-
-      int_fast16_t yawCommand = radio_rxValues[3] - 1500;  // Channel 4 = left joystick horizontal
-      yawCommand = yawCommand >= -radio_deadZone && yawCommand <= radio_deadZone ? 0 : yawCommand;
-      float yaw = yawCommand * targetAngleLimit / 5000.f;
+      targetYaw = yawCommand * targetAngleLimit * YAW_SENSITIVITY_MULTIPLIER / 500.f;
+      targetPitch = pitchCommand * targetAngleLimit / 500.f;
+      targetRoll = rollCommand * targetAngleLimit / 500.f;
 
       float delta = deltaTime_us / 1000000.f;
 
-      float rollError = targetRoll - roll;
-      float pitchError = targetPitch - pitch;
+      yawError = targetYaw;
+      pitchError = targetPitch - pitch;
+      rollError = targetRoll - roll;
 
-      if (rollError <= pid_integratorActiveThreshold) {
-        pid_cumulativeRollError += rollError * delta;
-        pid_cumulativeRollError =
-            pid_cumulativeRollError > pid_cumulativeErrorLimit ? pid_cumulativeErrorLimit : pid_cumulativeRollError;
-      }
       if (pitchError <= pid_integratorActiveThreshold) {
         pid_cumulativePitchError += pitchError * delta;
         pid_cumulativePitchError =
             pid_cumulativePitchError > pid_cumulativeErrorLimit ? pid_cumulativeErrorLimit : pid_cumulativePitchError;
       }
+      if (rollError <= pid_integratorActiveThreshold) {
+        pid_cumulativeRollError += rollError * delta;
+        pid_cumulativeRollError =
+            pid_cumulativeRollError > pid_cumulativeErrorLimit ? pid_cumulativeErrorLimit : pid_cumulativeRollError;
+      }
 
-      float cumulativeRollError = pid_cumulativeRollError;
       float cumulativePitchError = pid_cumulativePitchError;
+      float cumulativeRollError = pid_cumulativeRollError;
 
-      float rollErrorRate = (rollError - pid_lastRollError) / delta;
       float pitchErrorRate = (pitchError - pid_lastPitchError) / delta;
-      if (isnanf(rollErrorRate) || isinff(rollErrorRate)) { rollErrorRate = 0.f; }
+      float rollErrorRate = (rollError - pid_lastRollError) / delta;
       if (isnanf(pitchErrorRate) || isinff(pitchErrorRate)) { pitchErrorRate = 0.f; }
+      if (isnanf(rollErrorRate) || isinff(rollErrorRate)) { rollErrorRate = 0.f; }
 
-      float proportionalRollCorrection = rollError * proportionalGain / 100.f;
       float proportionalPitchCorrection = pitchError * proportionalGain / 100.f;
-      float integralRollCorrection = cumulativeRollError * integralGain / 100.f;
+      float proportionalRollCorrection = rollError * proportionalGain / 100.f;
       float integralPitchCorrection = cumulativePitchError * integralGain / 100.f;
-      float derivativeRollCorrection = rollErrorRate * derivativeGain / 100.f;
+      float integralRollCorrection = cumulativeRollError * integralGain / 100.f;
       float derivativePitchCorrection = pitchErrorRate * derivativeGain / 100.f;
+      float derivativeRollCorrection = rollErrorRate * derivativeGain / 100.f;
 
-      float rollCorrection = proportionalRollCorrection + integralRollCorrection + derivativeRollCorrection;
-      float pitchCorrection = proportionalPitchCorrection + integralPitchCorrection + derivativePitchCorrection;
+      yawCorrection = yawError;
+      pitchCorrection = proportionalPitchCorrection + integralPitchCorrection + derivativePitchCorrection;
+      rollCorrection = proportionalRollCorrection + integralRollCorrection + derivativeRollCorrection;
 
-      float cosineLossCorrection = 1.f / (cosf(roll / 180.f * M_PI) * cosf(pitch / 180.f * M_PI));
+      cosineLossCorrection = 1.f / (cosf(roll / 180.f * M_PI) * cosf(pitch / 180.f * M_PI));
       if (isnanf(cosineLossCorrection) || isinff(cosineLossCorrection)) { cosineLossCorrection = 1.f; }
 
-      float motor1Power_FL = basePower * cosineLossCorrection + rollCorrection + pitchCorrection + yaw;
-      float motor2Power_RR = basePower * cosineLossCorrection - rollCorrection - pitchCorrection + yaw;
-      float motor3Power_FR = basePower * cosineLossCorrection - rollCorrection + pitchCorrection - yaw;
-      float motor4Power_RL = basePower * cosineLossCorrection + rollCorrection - pitchCorrection - yaw;
+      motor1Power_FL = basePower * cosineLossCorrection + rollCorrection + pitchCorrection + yawCorrection;
+      motor2Power_RR = basePower * cosineLossCorrection - rollCorrection - pitchCorrection + yawCorrection;
+      motor3Power_FR = basePower * cosineLossCorrection - rollCorrection + pitchCorrection - yawCorrection;
+      motor4Power_RL = basePower * cosineLossCorrection + rollCorrection - pitchCorrection - yawCorrection;
 
-      pid_lastRollError = rollError;
       pid_lastPitchError = pitchError;
+      pid_lastRollError = rollError;
+    }
 
-      int_fast16_t motor1Pwm_FL = motor1Power_FL * 1000.f + 1000.f;
-      int_fast16_t motor2Pwm_RR = motor2Power_RR * 1000.f + 1000.f;
-      int_fast16_t motor3Pwm_FR = motor3Power_FR * 1000.f + 1000.f;
-      int_fast16_t motor4Pwm_RL = motor4Power_RL * 1000.f + 1000.f;
+    int_fast16_t motor1Pwm_FL = motor1Power_FL * 1000.f + 1000.f;
+    int_fast16_t motor2Pwm_RR = motor2Power_RR * 1000.f + 1000.f;
+    int_fast16_t motor3Pwm_FR = motor3Power_FR * 1000.f + 1000.f;
+    int_fast16_t motor4Pwm_RL = motor4Power_RL * 1000.f + 1000.f;
 
-      motor1Pwm_FL = motor1Pwm_FL < 1000 ? 1000 : (motor1Pwm_FL > 2000 ? 2000 : motor1Pwm_FL);
-      motor2Pwm_RR = motor2Pwm_RR < 1000 ? 1000 : (motor2Pwm_RR > 2000 ? 2000 : motor2Pwm_RR);
-      motor3Pwm_FR = motor3Pwm_FR < 1000 ? 1000 : (motor3Pwm_FR > 2000 ? 2000 : motor3Pwm_FR);
-      motor4Pwm_RL = motor4Pwm_RL < 1000 ? 1000 : (motor4Pwm_RL > 2000 ? 2000 : motor4Pwm_RL);
+    motor1Pwm_FL = motor1Pwm_FL < 1000 ? 1000 : (motor1Pwm_FL > 2000 ? 2000 : motor1Pwm_FL);
+    motor2Pwm_RR = motor2Pwm_RR < 1000 ? 1000 : (motor2Pwm_RR > 2000 ? 2000 : motor2Pwm_RR);
+    motor3Pwm_FR = motor3Pwm_FR < 1000 ? 1000 : (motor3Pwm_FR > 2000 ? 2000 : motor3Pwm_FR);
+    motor4Pwm_RL = motor4Pwm_RL < 1000 ? 1000 : (motor4Pwm_RL > 2000 ? 2000 : motor4Pwm_RL);
 
-      MOTOR_1_FL_PWM_CCR = motor1Pwm_FL;
-      MOTOR_2_RR_PWM_CCR = motor2Pwm_RR;
-      MOTOR_3_FR_PWM_CCR = motor3Pwm_FR;
-      MOTOR_4_RL_PWM_CCR = motor4Pwm_RL;
+    MOTOR_1_FL_PWM_CCR = motor1Pwm_FL;
+    MOTOR_2_RR_PWM_CCR = motor2Pwm_RR;
+    MOTOR_3_FR_PWM_CCR = motor3Pwm_FR;
+    MOTOR_4_RL_PWM_CCR = motor4Pwm_RL;
 
-      if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
-        Serial_Transmitf_DMA(
-            telemetry_format,
-            radio_rxValues[0],
-            radio_rxValues[1],
-            radio_rxValues[2],
-            radio_rxValues[3],
-            radio_rxValues[4],
-            radio_rxValues[5],
-            radio_rxValues[6],
-            radio_rxValues[7],
-            radio_rxValues[8],
-            radio_rxValues[9],
-            headingOffset,
-            rollOffset,
-            pitchOffset,
-            proportionalGain,
-            integralGain,
-            derivativeGain,
-            yaw,
-            targetRoll,
-            targetPitch,
-            heading,
-            roll,
-            pitch,
-            rollError,
-            pitchError,
-            yaw,
-            rollCorrection,
-            pitchCorrection,
-            cosineLossCorrection,
-            temperature,
-            pressure,
-            motor1Power_FL * 100,
-            motor3Power_FR * 100,
-            motor4Power_RL * 100,
-            motor2Power_RR * 100,
-            batt_adcRawValue * BATT_VOLTAGE_MULTIPLIER / 0xFFF,
-            telemetry_mavgProcTime / 1000.f,
-            command_rxBuffer
-        );
+    if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
+      Serial_Transmitf_DMA(
+          "Radio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
+          "Trims       : %2.4fH %2.4fP %2.4fR\r\n"
+          "PID Gains   : %1.5fP %1.5fI %1.5fD\r\n"
+          "Target      : %4.2fY %4.2fP %4.2fR\r\n"
+          "Orientation : %4.2fH %4.2fP %4.2fR\r\n"
+          "Errors      : %2.4fY %2.4fP %2.4fR\r\n"
+          "Corrections : %1.5fY %1.5fP %1.5fR %1.5fCos \r\n"
+          "Atmosphere  : %.2fC, %.2fPa\r\n"
+          "Powers      : %3.1f%% %3.1f%%\r\n"
+          "              %3.1f%% %3.1f%%\r\n"
+          "Batt volt.  : %.2f V\r\n"
+          "mspi        : %.2f\r\n"
+          "--------------------------------------------------------------------------------\r\n"
+          "> %s\r\n",
+          radio_rxValues[0],
+          radio_rxValues[1],
+          radio_rxValues[2],
+          radio_rxValues[3],
+          radio_rxValues[4],
+          radio_rxValues[5],
+          radio_rxValues[6],
+          radio_rxValues[7],
+          radio_rxValues[8],
+          radio_rxValues[9],
+          headingTrim,
+          pitchTrim,
+          rollTrim,
+          proportionalGain,
+          integralGain,
+          derivativeGain,
+          targetYaw,
+          targetPitch,
+          targetRoll,
+          heading,
+          pitch,
+          roll,
+          yawError,
+          pitchError,
+          rollError,
+          yawCorrection,
+          pitchCorrection,
+          rollCorrection,
+          cosineLossCorrection,
+          temperature,
+          pressure,
+          motor1Power_FL * 100.f,
+          motor3Power_FR * 100.f,
+          motor4Power_RL * 100.f,
+          motor2Power_RR * 100.f,
+          batt_adcRawValue * BATT_VOLTAGE_MULTIPLIER / 4095.f,
+          telemetry_mavgProcTime / 1000.f,
+          command_rxBuffer
+      );
+      telemetry_lastTransmission_us = currentTick_us;
+    }
 
-        if (command_ready) { command_handle(); }
+    if (command_ready) { command_handle(); }
 
-        telemetry_lastTransmission_us = currentTick_us;
-        int_fast32_t procTime = GetTickPrecise() - currentTick_us;
-        if (telemetry_mavgProcTime == -1) {
-          telemetry_mavgProcTime = procTime;
-        } else {
-          telemetry_mavgProcTime = (telemetry_mavgProcTime * 7 / 8) + (procTime / 8);
-        }
-      }
+    int_fast32_t procTime = GetTickPrecise() - currentTick_us;
+    if (telemetry_mavgProcTime == -1) {
+      telemetry_mavgProcTime = procTime;
+    } else {
+      telemetry_mavgProcTime = (telemetry_mavgProcTime * 7 / 8) + (procTime / 8);
     }
 
     pid_lastLoopTime_us = currentTick_us;
