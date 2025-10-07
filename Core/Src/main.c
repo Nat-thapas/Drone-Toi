@@ -73,9 +73,9 @@
 #define MOTOR_4_RL_PWM_CCR htim3.Instance->CCR3
 
 #define BATT_SENSOR_ADC hadc1
-#define BATT_VOLTAGE_MULTIPLIER 19.03846f
+#define BATT_VOLTAGE_MULTIPLIER 19.2f
 
-#define YAW_SENSITIVITY_MULTIPLIER 0.2f
+#define YAW_SENSITIVITY_MULTIPLIER 0.0025f
 
 /* USER CODE END PD */
 
@@ -162,8 +162,8 @@ static const float radio_targetAngleLimits[3] = {5.f, 10.f, 30.f};
 static uint32_t batt_adcRawValue = 0;
 
 static float imu_trimHeading = 0.f;
-static float imu_trimRoll = -0.6f;
-static float imu_trimPitch = -1.f;
+static float imu_trimPitch = -0.6f;
+static float imu_trimRoll = -0.45f;
 
 static int_fast32_t pid_minLoopPeriod = 10000;  // us.
 static int_fast32_t pid_lastLoopTime_us = 0;
@@ -253,6 +253,12 @@ static void command_handle() {
   size_t len = command_rxBufferSize;
   if (len >= 4 && strprei(command, "stop")) {
     // stop
+    command += 4;
+    len -= 4;
+    while (*command == 0x20) {
+      command++;
+      len--;
+    }
 
     MOTOR_1_FL_PWM_CCR = 1000u;
     MOTOR_2_RR_PWM_CCR = 1000u;
@@ -269,85 +275,149 @@ static void command_handle() {
   } else if (len >= 3 && strprei(command, "set")) {
     // set
     command += 3;
-    while (*(command++) == ' ') {}
+    len -= 3;
+    while (*command == 0x20) {
+      command++;
+      len--;
+    }
 
     if (len >= 3 && strprei(command, "pid")) {
       // set pid
       command += 3;
-      while (*(command++) == ' ') {}
+      len -= 3;
+      while (*command == 0x20) {
+        command++;
+        len--;
+      }
 
       if (len >= 1 && strprei(command, "p")) {
         // set pid p
         command += 1;
-        while (*(command++) == ' ') {}
+        len -= 1;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
         sscanf(command, "%f", &pid_proportionalGain);
       } else if (len >= 1 && strprei(command, "i")) {
         // set pid i
         command += 1;
-        while (*(command++) == ' ') {}
+        len -= 1;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
         sscanf(command, "%f", &pid_integralGain);
       } else if (len >= 1 && strprei(command, "d")) {
         // set pid d
         command += 1;
-        while (*(command++) == ' ') {}
+        len -= 1;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
         sscanf(command, "%f", &pid_derivativeGain);
       } else if (len >= 3 && strprei(command, "cel")) {
         // set pid cel
         command += 3;
-        while (*(command++) == ' ') {}
+        len -= 3;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
         sscanf(command, "%f", &pid_cumulativeErrorLimit);
       } else if (len >= 3 && strprei(command, "iat")) {
         // set pid iat
         command += 3;
-        while (*(command++) == ' ') {}
+        len -= 3;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
         sscanf(command, "%f", &pid_integratorActiveThreshold);
       } else if (len >= 3 && strprei(command, "mli")) {
         // set pid mli
         command += 3;
-        while (*(command++) == ' ') {}
+        len -= 3;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
         sscanf(command, "%d", &pid_minLoopPeriod);
       }
     } else if (len >= 4 && strprei(command, "trim")) {
       // set trim
       command += 4;
-      while (*(command++) == ' ') {}
+      len -= 4;
+      while (*command == 0x20) {
+        command++;
+        len--;
+      }
 
       if (len >= 1 && strprei(command, "h")) {
         // set trim h
         command += 1;
-        while (*(command++) == ' ') {}
+        len -= 1;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
         sscanf(command, "%f", &imu_trimHeading);
       } else if (len >= 1 && strprei(command, "r")) {
         // set trim r
         command += 1;
-        while (*(command++) == ' ') {}
+        len -= 1;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
         sscanf(command, "%f", &imu_trimRoll);
       } else if (len >= 1 && strprei(command, "p")) {
         // set trim p
         command += 1;
-        while (*(command++) == ' ') {}
+        len -= 1;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
         sscanf(command, "%f", &imu_trimPitch);
       }
     } else if (len >= 5 && strprei(command, "radio")) {
       // set radio
       command += 5;
-      while (*(command++) == ' ') {}
+      len -= 5;
+      while (*command == 0x20) {
+        command++;
+        len--;
+      }
 
       if (len >= 8 && strprei(command, "deadzone")) {
         // set radio deadzone
         command += 8;
-        while (*(command++) == ' ') {}
+        len -= 8;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
         sscanf(command, "%d", &radio_deadZone);
       }
     } else if (len >= 9 && strprei(command, "telemetry")) {
       // set telemetry
       command += 9;
-      while (*(command++) == ' ') {}
+      len -= 9;
+      while (*command == 0x20) {
+        command++;
+        len--;
+      }
 
       if (len >= 8 && strprei(command, "interval")) {
         // set telemetry interval
         command += 8;
-        while (*(command++) == ' ') {}
+        len -= 8;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
         sscanf(command, "%d", &telemetry_interval);
       }
     }
@@ -436,11 +506,19 @@ int main(void) {
   }
   bno055_setOperationModeNDOF();
   bno055_calibration_state_t calibrationState;
+  Serial_Transmitln_DMA("Waiting for IMU self-calibration");
   do {
     calibrationState = bno055_getCalibrationState();
+    Serial_Transmitf_DMA(
+        "System: %d, Gyroscope: %d, Accelerometer: %d, Magnetometer: %d\r\n",
+        calibrationState.sys,
+        calibrationState.gyro,
+        calibrationState.accel,
+        calibrationState.mag
+    );
     HAL_GPIO_TogglePin(LED_Green_GPIO_Port, LED_Green_Pin);
     HAL_Delay(250);
-  } while (calibrationState.sys != 0x03);
+  } while (calibrationState.gyro != 0x03);
 
   retry = 0;
 
@@ -540,10 +618,10 @@ int main(void) {
       pitchCorrection = pitchCommand * targetAngleLimit / 500.f;
       rollCorrection = rollCommand * targetAngleLimit / 500.f;
 
-      motor1Power_FL = basePower + rollCorrection + pitchCorrection + yawCorrection;
-      motor2Power_RR = basePower - rollCorrection - pitchCorrection + yawCorrection;
-      motor3Power_FR = basePower - rollCorrection + pitchCorrection - yawCorrection;
-      motor4Power_RL = basePower + rollCorrection - pitchCorrection - yawCorrection;
+      motor1Power_FL = basePower + rollCorrection + pitchCorrection - yawCorrection;
+      motor2Power_RR = basePower - rollCorrection - pitchCorrection - yawCorrection;
+      motor3Power_FR = basePower - rollCorrection + pitchCorrection + yawCorrection;
+      motor4Power_RL = basePower + rollCorrection - pitchCorrection + yawCorrection;
     } else if (altCommand == 0) {
       pid_lastPitchError = NAN;
       pid_lastRollError = NAN;
@@ -610,10 +688,10 @@ int main(void) {
       cosineLossCorrection = 1.f / (cosf(roll / 180.f * M_PI) * cosf(pitch / 180.f * M_PI));
       if (isnanf(cosineLossCorrection) || isinff(cosineLossCorrection)) { cosineLossCorrection = 1.f; }
 
-      motor1Power_FL = basePower * cosineLossCorrection + rollCorrection + pitchCorrection + yawCorrection;
-      motor2Power_RR = basePower * cosineLossCorrection - rollCorrection - pitchCorrection + yawCorrection;
-      motor3Power_FR = basePower * cosineLossCorrection - rollCorrection + pitchCorrection - yawCorrection;
-      motor4Power_RL = basePower * cosineLossCorrection + rollCorrection - pitchCorrection - yawCorrection;
+      motor1Power_FL = basePower * cosineLossCorrection + rollCorrection + pitchCorrection - yawCorrection;
+      motor2Power_RR = basePower * cosineLossCorrection - rollCorrection - pitchCorrection - yawCorrection;
+      motor3Power_FR = basePower * cosineLossCorrection - rollCorrection + pitchCorrection + yawCorrection;
+      motor4Power_RL = basePower * cosineLossCorrection + rollCorrection - pitchCorrection + yawCorrection;
 
       pid_lastPitchError = pitchError;
       pid_lastRollError = rollError;
@@ -637,12 +715,12 @@ int main(void) {
     if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
       Serial_Transmitf_DMA(
           "Radio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
-          "Trims       : %2.4fH %2.4fP %2.4fR\r\n"
-          "PID Gains   : %1.5fP %1.5fI %1.5fD\r\n"
-          "Target      : %4.2fY %4.2fP %4.2fR\r\n"
-          "Orientation : %4.2fH %4.2fP %4.2fR\r\n"
-          "Errors      : %2.4fY %2.4fP %2.4fR\r\n"
-          "Corrections : %1.5fY %1.5fP %1.5fR %1.5fCos \r\n"
+          "Trims       : %7.4fH %7.4fP %7.4fR\r\n"
+          "PID Gains   : %7.5fP %7.5fI %7.5fD\r\n"
+          "Target      : %7.2fY %7.2fP %7.2fR\r\n"
+          "Orientation : %7.2fH %7.2fP %7.2fR\r\n"
+          "Errors      : %7.4fY %7.4fP %7.4fR\r\n"
+          "Corrections : %7.5fY %7.5fP %7.5fR %7.5fCos \r\n"
           "Atmosphere  : %.2fC, %.2fPa\r\n"
           "Powers      : %3.1f%% %3.1f%%\r\n"
           "              %3.1f%% %3.1f%%\r\n"
@@ -1312,9 +1390,9 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
       if (c >= 0x20 && c <= 0x7E) {
         command_rxBuffer[command_rxBufferSize++] = c;
         command_rxBuffer[command_rxBufferSize] = 0x00;
-      } else if (c == 0x08 || c == 0x7F) {  // Backspace, DEL
+      } else if ((c == 0x08 || c == 0x7F) && command_rxBufferSize > 0) {  // Backspace, DEL
         command_rxBuffer[--command_rxBufferSize] = 0x00;
-      } else if (c == 0x0A) {  // LF
+      } else if (c == 0x0A || c == 0x0D) {  // LF
         command_ready = true;
       }
     }
@@ -1325,9 +1403,9 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
       if (c >= 0x20 && c <= 0x7E) {
         command_rxBuffer[command_rxBufferSize++] = c;
         command_rxBuffer[command_rxBufferSize] = 0x00;
-      } else if (c == 0x08 || c == 0x7F) {  // Backspace, DEL
+      } else if ((c == 0x08 || c == 0x7F) && command_rxBufferSize > 0) {  // Backspace, DEL
         command_rxBuffer[--command_rxBufferSize] = 0x00;
-      } else if (c == 0x0A) {  // LF
+      } else if (c == 0x0A || c == 0x0D) {  // LF
         command_ready = true;
       }
     }
