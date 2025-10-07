@@ -178,8 +178,8 @@ static float pid_lastPitchError = NAN;
 static float pid_cumulativeRollError = 0.f;
 static float pid_cumulativePitchError = 0.f;
 
-static uint8_t serial_rxBuffer;
-static uint8_t wlser_rxBuffer;
+static uint8_t serial_rxBuffer[32] = {};
+static uint8_t wlser_rxBuffer[32] = {};
 
 static char command_rxBuffer[256] = {};
 static size_t command_rxBufferSize = 0;
@@ -410,8 +410,8 @@ int main(void) {
   HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_SET);
 
   HAL_UART_Receive_DMA(&RADIO_RX_UART, radio_rxBuffer, 32);
-  HAL_UART_Receive_DMA(&SERIAL_UART, &serial_rxBuffer, 1);
-  HAL_UART_Receive_DMA(&WLSER_UART, &wlser_rxBuffer, 1);
+  HAL_UARTEx_ReceiveToIdle_DMA(&SERIAL_UART, serial_rxBuffer, 32);
+  HAL_UARTEx_ReceiveToIdle_DMA(&WLSER_UART, wlser_rxBuffer, 32);
   HAL_TIM_Base_Start_IT(&PRECISION_TIMER_TIM);
   HAL_TIM_PWM_Start(&MOTORS_PWM_TIM, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&MOTORS_PWM_TIM, TIM_CHANNEL_2);
@@ -1301,16 +1301,37 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
       }
     }
     HAL_UART_Receive_DMA(&RADIO_RX_UART, radio_rxBuffer, 32);
-  } else if (huart == &SERIAL_UART || huart == &WLSER_UART) {
-    char c = huart == &SERIAL_UART ? serial_rxBuffer : wlser_rxBuffer;
-    if (c >= 0x20 && c <= 0x7E) {
-      command_rxBuffer[command_rxBufferSize++] = c;
-      command_rxBuffer[command_rxBufferSize] = 0x00;
-    } else if (c == 0x08 || c == 0x7F) {  // Backspace, DEL
-      command_rxBuffer[--command_rxBufferSize] = 0x00;
-    } else if (c == 0x0A) {  // LF
-      command_ready = true;
+  }
+}
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+  uint_fast16_t size = Size;
+  if (huart == &SERIAL_UART) {
+    for (uint_fast16_t i = 0; i < size; i++) {
+      char c = serial_rxBuffer[i];
+      if (c >= 0x20 && c <= 0x7E) {
+        command_rxBuffer[command_rxBufferSize++] = c;
+        command_rxBuffer[command_rxBufferSize] = 0x00;
+      } else if (c == 0x08 || c == 0x7F) {  // Backspace, DEL
+        command_rxBuffer[--command_rxBufferSize] = 0x00;
+      } else if (c == 0x0A) {  // LF
+        command_ready = true;
+      }
     }
+    HAL_UARTEx_ReceiveToIdle_DMA(&SERIAL_UART, serial_rxBuffer, 32);
+  } else if (huart == &WLSER_UART) {
+    for (uint_fast16_t i = 0; i < size; i++) {
+      char c = wlser_rxBuffer[i];
+      if (c >= 0x20 && c <= 0x7E) {
+        command_rxBuffer[command_rxBufferSize++] = c;
+        command_rxBuffer[command_rxBufferSize] = 0x00;
+      } else if (c == 0x08 || c == 0x7F) {  // Backspace, DEL
+        command_rxBuffer[--command_rxBufferSize] = 0x00;
+      } else if (c == 0x0A) {  // LF
+        command_ready = true;
+      }
+    }
+    HAL_UARTEx_ReceiveToIdle_DMA(&WLSER_UART, wlser_rxBuffer, 32);
   }
 }
 
