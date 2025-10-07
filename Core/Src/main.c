@@ -577,12 +577,12 @@ int main(void) {
       pitchError = targetPitch - pitch;
       rollError = targetRoll - roll;
 
-      if (pitchError <= pid_integratorActiveThreshold) {
+      if (pitchError >= -pid_integratorActiveThreshold && pitchError <= pid_integratorActiveThreshold) {
         pid_cumulativePitchError += pitchError * delta;
         pid_cumulativePitchError =
             pid_cumulativePitchError > pid_cumulativeErrorLimit ? pid_cumulativeErrorLimit : pid_cumulativePitchError;
       }
-      if (rollError <= pid_integratorActiveThreshold) {
+      if (rollError >= -pid_integratorActiveThreshold && rollError <= pid_integratorActiveThreshold) {
         pid_cumulativeRollError += rollError * delta;
         pid_cumulativeRollError =
             pid_cumulativeRollError > pid_cumulativeErrorLimit ? pid_cumulativeErrorLimit : pid_cumulativeRollError;
