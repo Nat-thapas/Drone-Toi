@@ -75,8 +75,6 @@
 #define BATT_SENSOR_ADC hadc1
 #define BATT_VOLTAGE_MULTIPLIER 19.2f
 
-#define YAW_SENSITIVITY_MULTIPLIER 0.0025f
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -136,6 +134,9 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 static int_fast32_t precisionTimer_acc_us = 0;
 
+static uint32_t batt_adcRawValue = 0;
+static int_fast16_t batt_mavgValue = -1;
+
 static int_fast32_t telemetry_interval = 25000;  // us.
 static int_fast32_t telemetry_lastTransmission_us = 0;
 static int_fast32_t telemetry_mavgProcTime = -1;
@@ -159,7 +160,7 @@ static int_fast16_t radio_deadZone = 25;
 static int_fast16_t radio_consecutiveErrors = 0;
 static const float radio_targetAngleLimits[3] = {5.f, 10.f, 30.f};
 
-static uint32_t batt_adcRawValue = 0;
+static float control_yawSensitivityMultiplier = 0.0025f;
 
 static float imu_trimHeading = 0.f;
 static float imu_trimPitch = -0.6f;
@@ -260,10 +261,10 @@ static void command_handle() {
       len--;
     }
 
-    MOTOR_1_FL_PWM_CCR = 1000u;
-    MOTOR_2_RR_PWM_CCR = 1000u;
-    MOTOR_3_FR_PWM_CCR = 1000u;
-    MOTOR_4_RL_PWM_CCR = 1000u;
+    MOTOR_1_FL_PWM_CCR = 1000;
+    MOTOR_2_RR_PWM_CCR = 1000;
+    MOTOR_3_FR_PWM_CCR = 1000;
+    MOTOR_4_RL_PWM_CCR = 1000;
 
     char msg[] = "E-STOP Activated, shutting down...\r\n";
     size_t len = strlen(msg);
@@ -363,15 +364,6 @@ static void command_handle() {
           len--;
         }
         sscanf(command, "%f", &imu_trimHeading);
-      } else if (len >= 1 && strprei(command, "r")) {
-        // set trim r
-        command += 1;
-        len -= 1;
-        while (*command == 0x20) {
-          command++;
-          len--;
-        }
-        sscanf(command, "%f", &imu_trimRoll);
       } else if (len >= 1 && strprei(command, "p")) {
         // set trim p
         command += 1;
@@ -381,6 +373,15 @@ static void command_handle() {
           len--;
         }
         sscanf(command, "%f", &imu_trimPitch);
+      } else if (len >= 1 && strprei(command, "r")) {
+        // set trim r
+        command += 1;
+        len -= 1;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
+        sscanf(command, "%f", &imu_trimRoll);
       }
     } else if (len >= 5 && strprei(command, "radio")) {
       // set radio
@@ -400,6 +401,25 @@ static void command_handle() {
           len--;
         }
         sscanf(command, "%d", &radio_deadZone);
+      }
+    } else if (len >= 7 && strprei(command, "control")) {
+      // set control
+      command += 7;
+      len -= 7;
+      while (*command == 0x20) {
+        command++;
+        len--;
+      }
+
+      if (len >= 3 && strprei(command, "ysm")) {
+        // set radio ysm
+        command += 3;
+        len -= 3;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
+        sscanf(command, "%f", &control_yawSensitivityMultiplier);
       }
     } else if (len >= 9 && strprei(command, "telemetry")) {
       // set telemetry
@@ -544,6 +564,27 @@ int main(void) {
   HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_RESET);
 
+  HAL_Delay(250);
+
+  Serial_Transmit_DMA(
+      "##################################################\r\n"
+      "#                                                #\r\n"
+      "#   ____                           _____     _   #\r\n"
+      "#  |  _ \\ _ __ ___  _ __   ___    |_   _|__ (_)  #\r\n"
+      "#  | | | | '__/ _ \\| '_ \\ / _ \\_____| |/ _ \\| |  #\r\n"
+      "#  | |_| | | | (_) | | | |  __/_____| | (_) | |  #\r\n"
+      "#  |____/|_|  \\___/|_| |_|\\___|     |_|\\___/|_|  #\r\n"
+      "#                                                #\r\n"
+      "#                                                #\r\n"
+      "#            Initialization Complete             #\r\n"
+      "#                                                #\r\n"
+      "#           Starting flight control...           #\r\n"
+      "#                                                #\r\n"
+      "##################################################\r\n"
+  );
+
+  HAL_Delay(250);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -562,16 +603,25 @@ int main(void) {
       deltaTime_us = currentTick_us - pid_lastLoopTime_us;
     }
 
+    if (batt_mavgValue == -1) {
+      batt_mavgValue = batt_adcRawValue;
+    } else {
+      batt_mavgValue = (batt_mavgValue * 15 / 16) + (batt_adcRawValue / 16);
+    }
+
     bno055_vector_t vector = bno055_getVectorEuler();
 
     float temperature, pressure, humidity;  // humidity only for BME280
     bmp280_read_float(&bmp280, &temperature, &pressure, &humidity);
 
-    // Tri-state switch (third from left)
-    float targetAngleLimit = radio_targetAngleLimits[radio_parseTriStateSwitch(radio_rxValues[8])];
-
-    // Second from left switch, up = 1000 = FA on, down = 2000 = FA off
+    // 1st switch, up = false = output off, down = true = output on
+    bool outputEnabled = radio_parseBiStateSwitch(radio_rxValues[6]);
+    // 2nd switch, up = false = FA on, down = true = FA off
     bool faDisabled = radio_parseBiStateSwitch(radio_rxValues[7]);
+    // 3rd switch (tri-state)
+    float targetAngleLimit = radio_targetAngleLimits[radio_parseTriStateSwitch(radio_rxValues[8])];
+    // 4th switch, up = false = integrator off, down = true = integrator on
+    bool integratorEnabled = radio_parseBiStateSwitch(radio_rxValues[9]);
 
     // float pitchTrim = (radio_rxValues[4] - 1500.f) / 100.f;
     // float rollTrim = (radio_rxValues[5] - 1500.f) / 100.f;
@@ -606,6 +656,11 @@ int main(void) {
     int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
     rollCommand = rollCommand >= -radio_deadZone && rollCommand <= radio_deadZone ? 0 : rollCommand;
 
+    if (!integratorEnabled) {
+      pid_cumulativePitchError = 0.f;
+      pid_cumulativeRollError = 0.f;
+    }
+
     if (faDisabled) {
       pid_lastPitchError = NAN;
       pid_lastRollError = NAN;
@@ -614,7 +669,7 @@ int main(void) {
 
       float basePower = altCommand / 1000.f;
 
-      yawCorrection = yawCommand * targetAngleLimit * YAW_SENSITIVITY_MULTIPLIER / 500.f;
+      yawCorrection = yawCommand * targetAngleLimit * control_yawSensitivityMultiplier / 500.f;
       pitchCorrection = pitchCommand * targetAngleLimit / 500.f;
       rollCorrection = rollCommand * targetAngleLimit / 500.f;
 
@@ -645,7 +700,7 @@ int main(void) {
     } else {
       float basePower = altCommand / 1000.f;
 
-      targetYaw = yawCommand * targetAngleLimit * YAW_SENSITIVITY_MULTIPLIER / 500.f;
+      targetYaw = yawCommand * targetAngleLimit * control_yawSensitivityMultiplier / 500.f;
       targetPitch = pitchCommand * targetAngleLimit / 500.f;
       targetRoll = rollCommand * targetAngleLimit / 500.f;
 
@@ -655,12 +710,14 @@ int main(void) {
       pitchError = targetPitch - pitch;
       rollError = targetRoll - roll;
 
-      if (pitchError >= -pid_integratorActiveThreshold && pitchError <= pid_integratorActiveThreshold) {
+      if (integratorEnabled && pitchError >= -pid_integratorActiveThreshold &&
+          pitchError <= pid_integratorActiveThreshold) {
         pid_cumulativePitchError += pitchError * delta;
         pid_cumulativePitchError =
             pid_cumulativePitchError > pid_cumulativeErrorLimit ? pid_cumulativeErrorLimit : pid_cumulativePitchError;
       }
-      if (rollError >= -pid_integratorActiveThreshold && rollError <= pid_integratorActiveThreshold) {
+      if (integratorEnabled && rollError >= -pid_integratorActiveThreshold &&
+          rollError <= pid_integratorActiveThreshold) {
         pid_cumulativeRollError += rollError * delta;
         pid_cumulativeRollError =
             pid_cumulativeRollError > pid_cumulativeErrorLimit ? pid_cumulativeErrorLimit : pid_cumulativeRollError;
@@ -707,27 +764,32 @@ int main(void) {
     motor3Pwm_FR = motor3Pwm_FR < 1000 ? 1000 : (motor3Pwm_FR > 2000 ? 2000 : motor3Pwm_FR);
     motor4Pwm_RL = motor4Pwm_RL < 1000 ? 1000 : (motor4Pwm_RL > 2000 ? 2000 : motor4Pwm_RL);
 
-    MOTOR_1_FL_PWM_CCR = motor1Pwm_FL;
-    MOTOR_2_RR_PWM_CCR = motor2Pwm_RR;
-    MOTOR_3_FR_PWM_CCR = motor3Pwm_FR;
-    MOTOR_4_RL_PWM_CCR = motor4Pwm_RL;
+    MOTOR_1_FL_PWM_CCR = outputEnabled ? motor1Pwm_FL : 1000;
+    MOTOR_2_RR_PWM_CCR = outputEnabled ? motor2Pwm_RR : 1000;
+    MOTOR_3_FR_PWM_CCR = outputEnabled ? motor3Pwm_FR : 1000;
+    MOTOR_4_RL_PWM_CCR = outputEnabled ? motor4Pwm_RL : 1000;
 
     if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
       Serial_Transmitf_DMA(
-          "Radio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
-          "Trims       : %7.4fH %7.4fP %7.4fR\r\n"
-          "PID Gains   : %7.5fP %7.5fI %7.5fD\r\n"
-          "Target      : %7.2fY %7.2fP %7.2fR\r\n"
-          "Orientation : %7.2fH %7.2fP %7.2fR\r\n"
-          "Errors      : %7.4fY %7.4fP %7.4fR\r\n"
-          "Corrections : %7.5fY %7.5fP %7.5fR %7.5fCos \r\n"
-          "Atmosphere  : %.2fC, %.2fPa\r\n"
-          "Powers      : %3.1f%% %3.1f%%\r\n"
-          "              %3.1f%% %3.1f%%\r\n"
-          "Batt volt.  : %.2f V\r\n"
-          "mspi        : %.2f\r\n"
-          "--------------------------------------------------------------------------------\r\n"
-          "> %s\r\n",
+          "\x1B[?25l"  // Hide cursor
+          "\x1B[14A"   // Move cursor up 13 lines
+          "\r"         // Move cursor to start of line
+          "\x1B[2KRadio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
+          "\x1B[2KTrims       : %7.4fH %7.4fP %7.4fR\r\n"
+          "\x1B[2KPID Gains   : %7.5fP %7.5fI %7.5fD\r\n"
+          "\x1B[2KTarget      : %7.2fY %7.2fP %7.2fR\r\n"
+          "\x1B[2KOrientation : %7.2fH %7.2fP %7.2fR\r\n"
+          "\x1B[2KErrors      : %7.4fY %7.4fP %7.4fR\r\n"
+          "\x1B[2KCumu. Err.  : %7.4fY %7.4fP %7.4fR\r\n"
+          "\x1B[2KCorrections : %7.5fY %7.5fP %7.5fR %7.5fCos \r\n"
+          "\x1B[2KAtmosphere  : %.2fC, %.2fPa\r\n"
+          "\x1B[2KPowers      : %3.1f%% %3.1f%%\r\n"
+          "\x1B[2K              %3.1f%% %3.1f%%\r\n"
+          "\x1B[2KBatt volt.  : %.2f V\r\n"
+          "\x1B[2Kmspi        : %.2f\r\n"
+          "\x1B[2K--------------------------------------------------------------------------------\r\n"
+          "\x1B[2K> %s"
+          "\x1B[?25h",  // Show cursor
           radio_rxValues[0],
           radio_rxValues[1],
           radio_rxValues[2],
@@ -753,6 +815,9 @@ int main(void) {
           yawError,
           pitchError,
           rollError,
+          0.f,
+          pid_cumulativePitchError,
+          pid_cumulativeRollError,
           yawCorrection,
           pitchCorrection,
           rollCorrection,
@@ -763,7 +828,7 @@ int main(void) {
           motor3Power_FR * 100.f,
           motor4Power_RL * 100.f,
           motor2Power_RR * 100.f,
-          batt_adcRawValue * BATT_VOLTAGE_MULTIPLIER / 4095.f,
+          batt_mavgValue * BATT_VOLTAGE_MULTIPLIER / 4095.f,
           telemetry_mavgProcTime / 1000.f,
           command_rxBuffer
       );
@@ -776,7 +841,7 @@ int main(void) {
     if (telemetry_mavgProcTime == -1) {
       telemetry_mavgProcTime = procTime;
     } else {
-      telemetry_mavgProcTime = (telemetry_mavgProcTime * 7 / 8) + (procTime / 8);
+      telemetry_mavgProcTime = (telemetry_mavgProcTime * 15 / 16) + (procTime / 16);
     }
 
     pid_lastLoopTime_us = currentTick_us;
@@ -1424,19 +1489,15 @@ void Error_Handler(void) {
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
 
-  MOTOR_1_FL_PWM_CCR = 1000u;
-  MOTOR_2_RR_PWM_CCR = 1000u;
-  MOTOR_3_FR_PWM_CCR = 1000u;
-  MOTOR_4_RL_PWM_CCR = 1000u;
+  MOTOR_1_FL_PWM_CCR = 1000;
+  MOTOR_2_RR_PWM_CCR = 1000;
+  MOTOR_3_FR_PWM_CCR = 1000;
+  MOTOR_4_RL_PWM_CCR = 1000;
 
-  HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_RESET);
   while (1) {
-    HAL_GPIO_TogglePin(LED_Red_GPIO_Port, LED_Red_Pin);
-    HAL_GPIO_TogglePin(LED_Green_GPIO_Port, LED_Green_Pin);
-    HAL_GPIO_TogglePin(LED_Blue_GPIO_Port, LED_Blue_Pin);
-    for (uint_fast32_t i = 0; i < 1000000; i++) {}  // Interrupts are disabled, can't wait normally
+    HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
   }
   /* USER CODE END Error_Handler_Debug */
 }
