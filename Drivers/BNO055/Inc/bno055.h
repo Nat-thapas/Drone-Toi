@@ -259,38 +259,62 @@ enum bno055_axis_map_representation_t { BNO055_AXIS_X = 0x00, BNO055_AXIS_Y = 0x
 
 enum bno055_axis_map_sign_t { BNO055_AXIS_SIGN_POSITIVE = 0x00, BNO055_AXIS_SIGN_NEGATIVE = 0x01 };
 
-void bno055_writeData(uint8_t reg, uint8_t data);
-void bno055_readData(uint8_t reg, uint8_t *data, uint8_t len);
+bool bno055_writeData(uint8_t reg, uint8_t data);
+bool bno055_readData(uint8_t reg, uint8_t *data, uint8_t len);
 void bno055_delay(int time);
 
-void bno055_reset();
-bno055_opmode_t bno055_getOperationMode();
-void bno055_setOperationMode(bno055_opmode_t mode);
-void bno055_setOperationModeConfig();
-void bno055_setOperationModeNDOF();
-void bno055_enableExternalCrystal();
-void bno055_disableExternalCrystal();
-uint8_t bno055_setup();
+bool bno055_setPage(uint8_t page);
+bool bno055_reset();
+bool bno055_getOperationMode(bno055_opmode_t *mode);
+bno055_opmode_t bno055_getOperationModeWithoutCheck();
+bool bno055_setOperationMode(bno055_opmode_t mode);
+bool bno055_setOperationModeConfig();
+bool bno055_setOperationModeNDOF();
+bool bno055_setExternalCrystalUse(bool state);
+bool bno055_enableExternalCrystal();
+bool bno055_disableExternalCrystal();
+bool bno055_setup();
 
-int8_t bno055_getTemp();
+bool bno055_getTemp(int8_t *temp);
+int8_t bno055_getTempWithoutCheck();
 
-uint8_t bno055_getBootloaderRevision();
-uint8_t bno055_getSystemStatus();
-uint8_t bno055_getSystemError();
-int16_t bno055_getSWRevision();
+bool bno055_getBootloaderRevision(uint8_t *blRev);
+uint8_t bno055_getBootloaderRevisionWithoutCheck();
+bool bno055_getSystemStatus(uint8_t *status);
+uint8_t bno055_getSystemStatusWithoutCheck();
+bool bno055_getSystemError(uint8_t *error);
+uint8_t bno055_getSystemErrorWithoutCheck();
+bool bno055_getSWRevision(int16_t *swRev);
+int16_t bno055_getSWRevisionWithoutCheck();
 
-bno055_self_test_result_t bno055_getSelfTestResult();
-bno055_calibration_state_t bno055_getCalibrationState();
-bno055_calibration_data_t bno055_getCalibrationData();
-void bno055_setCalibrationData(bno055_calibration_data_t calData);
-bno055_vector_t bno055_getVectorAccelerometer();
-bno055_vector_t bno055_getVectorMagnetometer();
-bno055_vector_t bno055_getVectorGyroscope();
-bno055_vector_t bno055_getVectorEuler();
-bno055_vector_t bno055_getVectorLinearAccel();
-bno055_vector_t bno055_getVectorGravity();
-bno055_vector_t bno055_getVectorQuaternion();
-void bno055_setAxisMap(bno055_axis_map_t axis);
+bool bno055_getSelfTestResult(bno055_self_test_result_t *result);
+bno055_self_test_result_t bno055_getSelfTestResultWithoutCheck();
+bool bno055_getCalibrationState(bno055_calibration_state_t *cal);
+bno055_calibration_state_t bno055_getCalibrationStateWithoutCheck();
+bool bno055_getCalibrationData(bno055_calibration_data_t *calData);
+bno055_calibration_data_t bno055_getCalibrationDataWithoutCheck();
+bool bno055_setCalibrationData(bno055_calibration_data_t calData);
+
+bool bno055_getVector(uint8_t vec, bno055_vector_t *xyz);
+bno055_vector_t bno055_getVectorWithoutCheck(uint8_t vec);
+bool bno055_getVectorAccelerometer(bno055_vector_t *vec);
+bool bno055_getVectorMagnetometer(bno055_vector_t *vec);
+bool bno055_getVectorGyroscope(bno055_vector_t *vec);
+bool bno055_getVectorEuler(bno055_vector_t *vec);
+bool bno055_getVectorLinearAccel(bno055_vector_t *vec);
+bool bno055_getVectorGravity(bno055_vector_t *vec);
+bool bno055_getVectorQuaternion(bno055_vector_t *vec);
+
+// Legacy functions that don't check return values
+bno055_vector_t bno055_getVectorAccelerometerWithoutCheck();
+bno055_vector_t bno055_getVectorMagnetometerWithoutCheck();
+bno055_vector_t bno055_getVectorGyroscopeWithoutCheck();
+bno055_vector_t bno055_getVectorEulerWithoutCheck();
+bno055_vector_t bno055_getVectorLinearAccelWithoutCheck();
+bno055_vector_t bno055_getVectorGravityWithoutCheck();
+bno055_vector_t bno055_getVectorQuaternionWithoutCheck();
+
+bool bno055_setAxisMap(bno055_axis_map_t axis);
 
 #ifdef __cplusplus
 }

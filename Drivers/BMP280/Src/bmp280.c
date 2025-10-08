@@ -64,7 +64,7 @@ static bool read_register16(BMP280_HandleTypedef *dev, uint8_t addr, uint16_t *v
   uint8_t rx_buff[2];
   tx_buff = (dev->addr << 1);
 
-  if (HAL_I2C_Mem_Read(dev->i2c, tx_buff, addr, 1, rx_buff, 2, 5000) == HAL_OK) {
+  if (HAL_I2C_Mem_Read(dev->i2c, tx_buff, addr, 1, rx_buff, 2, 5) == HAL_OK) {
     *value = (uint16_t)((rx_buff[1] << 8) | rx_buff[0]);
     return true;
   } else
@@ -74,7 +74,7 @@ static bool read_register16(BMP280_HandleTypedef *dev, uint8_t addr, uint16_t *v
 static inline int read_data(BMP280_HandleTypedef *dev, uint8_t addr, uint8_t *value, uint8_t len) {
   uint16_t tx_buff;
   tx_buff = (dev->addr << 1);
-  if (HAL_I2C_Mem_Read(dev->i2c, tx_buff, addr, 1, value, len, 5000) == HAL_OK)
+  if (HAL_I2C_Mem_Read(dev->i2c, tx_buff, addr, 1, value, len, 5) == HAL_OK)
     return 0;
   else
     return 1;
@@ -113,7 +113,7 @@ static int write_register8(BMP280_HandleTypedef *dev, uint8_t addr, uint8_t valu
 
   tx_buff = (dev->addr << 1);
 
-  if (HAL_I2C_Mem_Write(dev->i2c, tx_buff, addr, 1, &value, 1, 10000) == HAL_OK)
+  if (HAL_I2C_Mem_Write(dev->i2c, tx_buff, addr, 1, &value, 1, 5) == HAL_OK)
     return false;
   else
     return true;

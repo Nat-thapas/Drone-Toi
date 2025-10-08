@@ -15,18 +15,20 @@
 
 # Commands
 
-| Function | Category  | Target   | Argument | Description                                                                     |
-| -------- | --------- | -------- | -------- | ------------------------------------------------------------------------------- |
-| STOP     | -         | -        | -        | Perform E-STOP, shutdown all motors immediately then shutdown flight controller |
-| SET      | PID       | P        | float    | Set PID proportional gain                                                       |
-| SET      | PID       | I        | float    | Set PID integral gain                                                           |
-| SET      | PID       | D        | float    | Set PID derivative gain                                                         |
-| SET      | PID       | CEL      | float    | Set PID cumulative error limit                                                  |
-| SET      | PID       | IAT      | float    | Set PID integrator active threshold                                             |
-| SET      | PID       | MLI      | int      | Set PID minimum loop interval (microseconds)                                    |
-| SET      | TRIM      | H        | float    | Set heading trim                                                                |
-| SET      | TRIM      | P        | float    | Set pitch trim, more positive values will cause drone to nose down              |
-| SET      | TRIM      | R        | float    | Set roll trim, more positive values will cause drone right wing to come down    |
-| SET      | RADIO     | DEADZONE | int      | Set radio deadzone                                                              |
-| SET      | CONTROL   | YSM      | float    | Set control yaw sensitivity multiplier                                          |
-| SET      | TELEMETRY | INTERVAL | INT      | Set telemetry transmission interval (microseconds)                              |
+Commands are comprised of space separated keywords in their respective order and are case-insensitive.
+
+| Function | Category  | Target   | Parameter | Description                                                                     |
+| -------- | --------- | -------- | --------- | ------------------------------------------------------------------------------- |
+| STOP     | -         | -        | -         | Perform E-STOP, shutdown all motors immediately then shutdown flight controller |
+| SET      | PID       | P        | float     | Set PID proportional gain                                                       |
+| SET      | PID       | I        | float     | Set PID integral gain                                                           |
+| SET      | PID       | D        | float     | Set PID derivative gain                                                         |
+| SET      | PID       | CEL      | float     | Set PID cumulative error limit                                                  |
+| SET      | PID       | IAT      | float     | Set PID integrator active threshold                                             |
+| SET      | PID       | MLI      | int       | Set PID minimum loop interval (microseconds)                                    |
+| SET      | TRIM      | H        | float     | Set heading trim                                                                |
+| SET      | TRIM      | P        | float     | Set pitch trim, more positive values will cause drone to nose down              |
+| SET      | TRIM      | R        | float     | Set roll trim, more positive values will cause drone right wing to come down    |
+| SET      | RADIO     | DEADZONE | int       | Set radio deadzone                                                              |
+| SET      | CONTROL   | YSM      | float     | Set control yaw sensitivity multiplier                                          |
+| SET      | TELEMETRY | INTERVAL | INT       | Set telemetry transmission interval (microseconds)                              |

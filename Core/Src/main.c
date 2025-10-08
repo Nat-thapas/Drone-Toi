@@ -140,6 +140,9 @@ static int_fast16_t batt_mavgValue = -1;
 static int_fast32_t telemetry_interval = 25000;  // us.
 static int_fast32_t telemetry_lastTransmission_us = 0;
 static int_fast32_t telemetry_mavgProcTime = -1;
+static int_fast16_t telemetry_iterationCount = 0;
+
+static const char text_status[] = "\x1B[92m OK\x1B[0m\0\x1B[91mBAD\x1B[0m";
 
 static uint8_t radio_rxBuffer[32] = {};
 static int_fast16_t radio_rxValues[10] = {
@@ -247,6 +250,10 @@ static inline bool radio_parseBiStateSwitch(int_fast16_t value) {
 
 static inline bool strprei(const char *str, const char *pre) {
   return strncmpi(str, pre, strlen(pre)) == 0;
+}
+
+__attribute__((optimize("O0"))) static void busyDelay(uint32_t count) {
+  while (count--) { __NOP(); }
 }
 
 static void command_handle() {
@@ -524,11 +531,21 @@ int main(void) {
     HAL_Delay(100);
     retry++;
   }
-  bno055_setOperationModeNDOF();
+  retry = 0;
+  while (!bno055_setOperationModeNDOF()) {
+    if (retry >= I2C_PERIPHERAL_INIT_RETRY_LIMIT) {
+      Serial_Transmitln_DMA("Failed to configure BNO055 Inertial Measurement Unit. Entering error state...");
+      Error_Handler();
+    }
+    Serial_Transmitln_DMA("Failed to configure BNO055 Inertial Measurement Unit, retrying...");
+    HAL_Delay(100);
+    retry++;
+  }
+  bool calibrationStateValid;
   bno055_calibration_state_t calibrationState;
   Serial_Transmitln_DMA("Waiting for IMU self-calibration");
   do {
-    calibrationState = bno055_getCalibrationState();
+    calibrationStateValid = bno055_getCalibrationState(&calibrationState);
     Serial_Transmitf_DMA(
         "System: %d, Gyroscope: %d, Accelerometer: %d, Magnetometer: %d\r\n",
         calibrationState.sys,
@@ -538,7 +555,7 @@ int main(void) {
     );
     HAL_GPIO_TogglePin(LED_Green_GPIO_Port, LED_Green_Pin);
     HAL_Delay(250);
-  } while (calibrationState.gyro != 0x03);
+  } while (!calibrationStateValid || calibrationState.gyro != 0x03);
 
   retry = 0;
 
@@ -568,6 +585,7 @@ int main(void) {
 
   Serial_Transmit_DMA(
       "##################################################\r\n"
+      "#                                                #\r\n"
       "#                                                #\r\n"
       "#   ____                           _____     _   #\r\n"
       "#  |  _ \\ _ __ ___  _ __   ___    |_   _|__ (_)  #\r\n"
@@ -609,10 +627,11 @@ int main(void) {
       batt_mavgValue = (batt_mavgValue * 15 / 16) + (batt_adcRawValue / 16);
     }
 
-    bno055_vector_t vector = bno055_getVectorEuler();
+    bno055_vector_t orientationVector;
+    bool orientationDataValid = bno055_getVectorEuler(&orientationVector);
 
     float temperature, pressure, humidity;  // humidity only for BME280
-    bmp280_read_float(&bmp280, &temperature, &pressure, &humidity);
+    bool atmosDataValid = bmp280_read_float(&bmp280, &temperature, &pressure, &humidity);
 
     // 1st switch, up = false = output off, down = true = output on
     bool outputEnabled = radio_parseBiStateSwitch(radio_rxValues[6]);
@@ -629,9 +648,9 @@ int main(void) {
     float pitchTrim = imu_trimPitch;
     float rollTrim = imu_trimRoll;
 
-    float heading = vector.x - headingTrim;
-    float pitch = -vector.y + pitchTrim;  // + = nose up
-    float roll = vector.z - rollTrim;     // + = right wing down
+    float heading = orientationVector.x - headingTrim;
+    float pitch = -orientationVector.y + pitchTrim;  // + = nose up
+    float roll = orientationVector.z - rollTrim;     // + = right wing down
 
     // float proportionalGain = (radio_rxValues[4] - 1000.f) / 1000.f;
     // float derivativeGain = (radio_rxValues[5] - 1000.f) / 1000.f;
@@ -656,11 +675,6 @@ int main(void) {
     int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
     rollCommand = rollCommand >= -radio_deadZone && rollCommand <= radio_deadZone ? 0 : rollCommand;
 
-    if (!integratorEnabled) {
-      pid_cumulativePitchError = 0.f;
-      pid_cumulativeRollError = 0.f;
-    }
-
     if (faDisabled) {
       pid_lastPitchError = NAN;
       pid_lastRollError = NAN;
@@ -677,11 +691,19 @@ int main(void) {
       motor2Power_RR = basePower - rollCorrection - pitchCorrection - yawCorrection;
       motor3Power_FR = basePower - rollCorrection + pitchCorrection + yawCorrection;
       motor4Power_RL = basePower + rollCorrection - pitchCorrection + yawCorrection;
+    } else if (!orientationDataValid) {
+      pid_lastPitchError = NAN;
+      pid_lastRollError = NAN;
+
+      float basePower = altCommand / 1000.f;
+
+      motor1Power_FL = basePower;
+      motor2Power_RR = basePower;
+      motor3Power_FR = basePower;
+      motor4Power_RL = basePower;
     } else if (altCommand == 0) {
       pid_lastPitchError = NAN;
       pid_lastRollError = NAN;
-      pid_cumulativePitchError = 0.f;
-      pid_cumulativeRollError = 0.f;
 
       motor1Power_FL = 0.f;
       motor2Power_RR = 0.f;
@@ -690,8 +712,6 @@ int main(void) {
     } else if (altCommand == 1000) {
       pid_lastPitchError = NAN;
       pid_lastRollError = NAN;
-      pid_cumulativePitchError = 0.f;
-      pid_cumulativeRollError = 0.f;
 
       motor1Power_FL = 1.f;
       motor2Power_RR = 1.f;
@@ -772,24 +792,27 @@ int main(void) {
     if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
       Serial_Transmitf_DMA(
           "\x1B[?25l"  // Hide cursor
-          "\x1B[14A"   // Move cursor up 13 lines
-          "\r"         // Move cursor to start of line
-          "\x1B[2KRadio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
-          "\x1B[2KTrims       : %7.4fH %7.4fP %7.4fR\r\n"
-          "\x1B[2KPID Gains   : %7.5fP %7.5fI %7.5fD\r\n"
-          "\x1B[2KTarget      : %7.2fY %7.2fP %7.2fR\r\n"
-          "\x1B[2KOrientation : %7.2fH %7.2fP %7.2fR\r\n"
-          "\x1B[2KErrors      : %7.4fY %7.4fP %7.4fR\r\n"
-          "\x1B[2KCumu. Err.  : %7.4fY %7.4fP %7.4fR\r\n"
-          "\x1B[2KCorrections : %7.5fY %7.5fP %7.5fR %7.5fCos \r\n"
-          "\x1B[2KAtmosphere  : %.2fC, %.2fPa\r\n"
-          "\x1B[2KPowers      : %3.1f%% %3.1f%%\r\n"
-          "\x1B[2K              %3.1f%% %3.1f%%\r\n"
-          "\x1B[2KBatt volt.  : %.2f V\r\n"
-          "\x1B[2Kmspi        : %.2f\r\n"
-          "\x1B[2K--------------------------------------------------------------------------------\r\n"
-          "\x1B[2K> %s"
+          "\x1B[15F"   // Move cursor up 15 lines and to the start of the line
+          "\x1B[0J"    // Erase until end of screen
+          "Status      : IMU: %s, ALT: %s\r\n"
+          "Radio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
+          "Trims       : %7.4fH %7.4fP %7.4fR\r\n"
+          "PID Gains   : %7.5fP %7.5fI %7.5fD\r\n"
+          "Target      : %7.2fY %7.2fP %7.2fR\r\n"
+          "Orientation : %7.2fH %7.2fP %7.2fR\r\n"
+          "Errors      : %7.4fY %7.4fP %7.4fR\r\n"
+          "Cumu. Err.  : %7.4fY %7.4fP %7.4fR\r\n"
+          "Corrections : %7.5fY %7.5fP %7.5fR %7.5fCos \r\n"
+          "Atmosphere  : %.2fC, %.2fPa\r\n"
+          "Powers      : %3.1f%% %3.1f%%\r\n"
+          "              %3.1f%% %3.1f%%\r\n"
+          "Batt volt.  : %.2f V\r\n"
+          "mspi        : %.2f\r\n"
+          "--------------------------------------------------------------------------------\r\n"
+          "%c> %s"
           "\x1B[?25h",  // Show cursor
+          text_status + (orientationDataValid ? 13 : 0),
+          text_status + (atmosDataValid ? 13 : 0),
           radio_rxValues[0],
           radio_rxValues[1],
           radio_rxValues[2],
@@ -830,9 +853,12 @@ int main(void) {
           motor2Power_RR * 100.f,
           batt_mavgValue * BATT_VOLTAGE_MULTIPLIER / 4095.f,
           telemetry_mavgProcTime / 1000.f,
+          "|/-\\|/-\\"[telemetry_iterationCount % 8],
           command_rxBuffer
       );
+
       telemetry_lastTransmission_us = currentTick_us;
+      telemetry_iterationCount++;
     }
 
     if (command_ready) { command_handle(); }
@@ -1494,10 +1520,14 @@ void Error_Handler(void) {
   MOTOR_3_FR_PWM_CCR = 1000;
   MOTOR_4_RL_PWM_CCR = 1000;
 
+  HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_RESET);
   while (1) {
-    HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_TogglePin(LED_Red_GPIO_Port, LED_Red_Pin);
+    HAL_GPIO_TogglePin(LED_Green_GPIO_Port, LED_Green_Pin);
+    HAL_GPIO_TogglePin(LED_Blue_GPIO_Port, LED_Blue_Pin);
+    busyDelay(1000000);
   }
   /* USER CODE END Error_Handler_Debug */
 }
