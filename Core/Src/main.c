@@ -73,7 +73,7 @@
 #define MOTOR_4_RL_PWM_CCR htim3.Instance->CCR3
 
 #define BATT_SENSOR_ADC hadc1
-#define BATT_VOLTAGE_MULTIPLIER 19.2f
+#define BATT_VOLTAGE_MULTIPLIER 19.4f
 
 /* USER CODE END PD */
 
@@ -132,17 +132,15 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
 
-static int_fast32_t precisionTimer_acc_us = 0;
-
 static uint32_t batt_adcRawValue = 0;
 static int_fast16_t batt_mavgValue = -1;
 
-static int_fast32_t telemetry_interval = 25000;  // us.
+static int_fast32_t telemetry_interval = 100000;  // us.
 static int_fast32_t telemetry_lastTransmission_us = 0;
 static int_fast32_t telemetry_mavgProcTime = -1;
 static int_fast16_t telemetry_iterationCount = 0;
 
-static const char text_status[] = "\x1B[92m OK\x1B[0m\0\x1B[91mBAD\x1B[0m";
+static const char text_status[] = "\x1B[31mBAD\x1B[0m\0\x1B[32mOK \x1B[0m";
 
 static uint8_t radio_rxBuffer[32] = {};
 static int_fast16_t radio_rxValues[10] = {
@@ -163,18 +161,18 @@ static int_fast16_t radio_deadZone = 25;
 static int_fast16_t radio_consecutiveErrors = 0;
 static const float radio_targetAngleLimits[3] = {5.f, 10.f, 30.f};
 
-static float control_yawSensitivityMultiplier = 0.0025f;
+static float control_yawSensitivityMultiplier = 0.25f;
 
 static float imu_trimHeading = 0.f;
-static float imu_trimPitch = -0.6f;
-static float imu_trimRoll = -0.45f;
+static float imu_trimPitch = -0.2f;
+static float imu_trimRoll = 3.5f;
 
 static int_fast32_t pid_minLoopPeriod = 10000;  // us.
 static int_fast32_t pid_lastLoopTime_us = 0;
 static float pid_proportionalGain = 0.3f;
-static float pid_integralGain = 0.f;
-static float pid_derivativeGain = 0.f;
-static float pid_cumulativeErrorLimit = 25.f;
+static float pid_integralGain = 1.f;
+static float pid_derivativeGain = 0.025f;
+static float pid_cumulativeErrorLimit = 0.5f;
 // Integrator will only be active if current error is less than or equal to threshold degrees
 static float pid_integratorActiveThreshold = 2.5f;
 static float pid_lastRollError = NAN;
@@ -217,7 +215,7 @@ static void MX_TIM2_Init(void);
 /* USER CODE BEGIN 0 */
 
 static inline int_fast32_t GetTickPrecise() {
-  return precisionTimer_acc_us + PRECISION_TIMER_COUNT;
+  return PRECISION_TIMER_COUNT;
 }
 
 void Serial_Transmit_DMA(char *str) {
@@ -252,7 +250,11 @@ static inline bool strprei(const char *str, const char *pre) {
   return strncmpi(str, pre, strlen(pre)) == 0;
 }
 
-__attribute__((optimize("O0"))) static void busyDelay(uint32_t count) {
+static inline float clamp(float val, float min, float max) {
+  return val < min ? min : (val > max ? max : val);
+}
+
+__attribute__((optimize("O0"))) static void busyDelay(volatile uint32_t count) {
   while (count--) { __NOP(); }
 }
 
@@ -598,6 +600,7 @@ int main(void) {
       "#                                                #\r\n"
       "#           Starting flight control...           #\r\n"
       "#                                                #\r\n"
+      "#                                                #\r\n"
       "##################################################\r\n"
   );
 
@@ -627,11 +630,15 @@ int main(void) {
       batt_mavgValue = (batt_mavgValue * 15 / 16) + (batt_adcRawValue / 16);
     }
 
+    int_fast32_t imuAcquisitionStart = GetTickPrecise();
     bno055_vector_t orientationVector;
     bool orientationDataValid = bno055_getVectorEuler(&orientationVector);
+    int_fast32_t imuAcquisitionTime = GetTickPrecise() - imuAcquisitionStart;
 
+    int_fast32_t altAcquisitionStart = GetTickPrecise();
     float temperature, pressure, humidity;  // humidity only for BME280
     bool atmosDataValid = bmp280_read_float(&bmp280, &temperature, &pressure, &humidity);
+    int_fast32_t altAcquisitionTime = GetTickPrecise() - altAcquisitionStart;
 
     // 1st switch, up = false = output off, down = true = output on
     bool outputEnabled = radio_parseBiStateSwitch(radio_rxValues[6]);
@@ -660,7 +667,7 @@ int main(void) {
 
     float targetYaw = 0.f, targetPitch = 0.f, targetRoll = 0.f;
     float yawError = 0.f, pitchError = 0.f, rollError = 0.f;
-    float yawCorrection = 0.f, pitchCorrection = 0.f, rollCorrection = 0.f, cosineLossCorrection = 0.f;
+    float yawCorrection = 0.f, pitchCorrection = 0.f, rollCorrection = 0.f, cosineLossCorrection = 1.f;
     float motor1Power_FL = 0.f, motor2Power_RR = 0.f, motor3Power_FR = 0.f, motor4Power_RL = 0.f;
 
     int_fast16_t altCommand = radio_rxValues[2] - 1000;  // Channel 3 = left joystick vertical
@@ -683,9 +690,9 @@ int main(void) {
 
       float basePower = altCommand / 1000.f;
 
-      yawCorrection = yawCommand * targetAngleLimit * control_yawSensitivityMultiplier / 500.f;
-      pitchCorrection = pitchCommand * targetAngleLimit / 500.f;
-      rollCorrection = rollCommand * targetAngleLimit / 500.f;
+      yawCorrection = yawCommand * targetAngleLimit / 200000.f;
+      pitchCorrection = pitchCommand * targetAngleLimit / 200000.f;
+      rollCorrection = rollCommand * targetAngleLimit / 200000.f;
 
       motor1Power_FL = basePower + rollCorrection + pitchCorrection - yawCorrection;
       motor2Power_RR = basePower - rollCorrection - pitchCorrection - yawCorrection;
@@ -720,7 +727,7 @@ int main(void) {
     } else {
       float basePower = altCommand / 1000.f;
 
-      targetYaw = yawCommand * targetAngleLimit * control_yawSensitivityMultiplier / 500.f;
+      targetYaw = yawCommand * targetAngleLimit * control_yawSensitivityMultiplier / 50000.f;
       targetPitch = pitchCommand * targetAngleLimit / 500.f;
       targetRoll = rollCommand * targetAngleLimit / 500.f;
 
@@ -733,14 +740,12 @@ int main(void) {
       if (integratorEnabled && pitchError >= -pid_integratorActiveThreshold &&
           pitchError <= pid_integratorActiveThreshold) {
         pid_cumulativePitchError += pitchError * delta;
-        pid_cumulativePitchError =
-            pid_cumulativePitchError > pid_cumulativeErrorLimit ? pid_cumulativeErrorLimit : pid_cumulativePitchError;
+        pid_cumulativePitchError = clamp(pid_cumulativePitchError, -pid_cumulativeErrorLimit, pid_cumulativeErrorLimit);
       }
       if (integratorEnabled && rollError >= -pid_integratorActiveThreshold &&
           rollError <= pid_integratorActiveThreshold) {
         pid_cumulativeRollError += rollError * delta;
-        pid_cumulativeRollError =
-            pid_cumulativeRollError > pid_cumulativeErrorLimit ? pid_cumulativeErrorLimit : pid_cumulativeRollError;
+        pid_cumulativeRollError = clamp(pid_cumulativeRollError, -pid_cumulativeErrorLimit, pid_cumulativeErrorLimit);
       }
 
       float cumulativePitchError = pid_cumulativePitchError;
@@ -792,27 +797,30 @@ int main(void) {
     if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
       Serial_Transmitf_DMA(
           "\x1B[?25l"  // Hide cursor
-          "\x1B[15F"   // Move cursor up 15 lines and to the start of the line
-          "\x1B[0J"    // Erase until end of screen
-          "Status      : IMU: %s, ALT: %s\r\n"
-          "Radio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
-          "Trims       : %7.4fH %7.4fP %7.4fR\r\n"
-          "PID Gains   : %7.5fP %7.5fI %7.5fD\r\n"
-          "Target      : %7.2fY %7.2fP %7.2fR\r\n"
-          "Orientation : %7.2fH %7.2fP %7.2fR\r\n"
-          "Errors      : %7.4fY %7.4fP %7.4fR\r\n"
-          "Cumu. Err.  : %7.4fY %7.4fP %7.4fR\r\n"
-          "Corrections : %7.5fY %7.5fP %7.5fR %7.5fCos \r\n"
-          "Atmosphere  : %.2fC, %.2fPa\r\n"
-          "Powers      : %3.1f%% %3.1f%%\r\n"
-          "              %3.1f%% %3.1f%%\r\n"
-          "Batt volt.  : %.2f V\r\n"
-          "mspi        : %.2f\r\n"
-          "--------------------------------------------------------------------------------\r\n"
-          "%c> %s"
+          "\x1B[16F"   // Move cursor up 16 lines and to the start of the line
+          "\x1B[0K--------------------------------------------------------------------------------\r\n"
+          "\x1B[0KStatus      : IMU: %s (%4d us.), ALT: %s (%4d us.), Tick: %10d us.\r\n"
+          "\x1B[0KRadio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
+          "\x1B[0KTrims       : %7.4fH %7.4fP %7.4fR\r\n"
+          "\x1B[0KPID Gains   : %7.4fP %7.4fI %7.4fD\r\n"
+          "\x1B[0KTarget      : %7.2fY %7.2fP %7.2fR\r\n"
+          "\x1B[0KOrientation : %7.2fH %7.2fP %7.2fR\r\n"
+          "\x1B[0KErrors      : %7.4fY %7.4fP %7.4fR\r\n"
+          "\x1B[0KCumu. Err.  : %7.4fY %7.4fP %7.4fR\r\n"
+          "\x1B[0KCorrections : %7.4fY %7.4fP %7.4fR %7.4fCos \r\n"
+          "\x1B[0KAtmosphere  : %.2fC, %.2fPa\r\n"
+          "\x1B[0KPowers      : %5.1f%% %5.1f%%\r\n"
+          "\x1B[0K              %5.1f%% %5.1f%%\r\n"
+          "\x1B[0KBatt volt.  : %.2f V\r\n"
+          "\x1B[0Kmspi        : %.2f ms.\r\n"
+          "\x1B[0K--------------------------------------------------------------------------------\r\n"
+          "\x1B[0K%c > %s"
           "\x1B[?25h",  // Show cursor
           text_status + (orientationDataValid ? 13 : 0),
+          imuAcquisitionTime,
           text_status + (atmosDataValid ? 13 : 0),
+          altAcquisitionTime,
+          GetTickPrecise(),
           radio_rxValues[0],
           radio_rxValues[1],
           radio_rxValues[2],
@@ -1134,7 +1142,7 @@ static void MX_TIM2_Init(void) {
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 108 - 1;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 1000000 - 1;
+  htim2.Init.Period = 2147483647;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK) { Error_Handler(); }
@@ -1293,7 +1301,7 @@ static void MX_USART6_UART_Init(void) {
 
   /* USER CODE END USART6_Init 1 */
   huart6.Instance = USART6;
-  huart6.Init.BaudRate = 921600;
+  huart6.Init.BaudRate = 460800;
   huart6.Init.WordLength = UART_WORDLENGTH_8B;
   huart6.Init.StopBits = UART_STOPBITS_1;
   huart6.Init.Parity = UART_PARITY_NONE;
@@ -1431,10 +1439,6 @@ static void MX_GPIO_Init(void) {
 
 /* USER CODE BEGIN 4 */
 
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
-  if (htim == &PRECISION_TIMER_TIM) { precisionTimer_acc_us += 1000000; }
-}
-
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
   if (huart == &RADIO_RX_UART) {
     uint16_t checksum = 0;
@@ -1527,7 +1531,7 @@ void Error_Handler(void) {
     HAL_GPIO_TogglePin(LED_Red_GPIO_Port, LED_Red_Pin);
     HAL_GPIO_TogglePin(LED_Green_GPIO_Port, LED_Green_Pin);
     HAL_GPIO_TogglePin(LED_Blue_GPIO_Port, LED_Blue_Pin);
-    busyDelay(1000000);
+    busyDelay(2500000);
   }
   /* USER CODE END Error_Handler_Debug */
 }
