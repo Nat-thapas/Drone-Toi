@@ -75,6 +75,8 @@
 #define BATT_SENSOR_ADC hadc1
 #define BATT_VOLTAGE_MULTIPLIER 19.4f
 
+#define INTERRUPT_DEBOUNCE 250
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -131,6 +133,9 @@ DMA_HandleTypeDef hdma_usart6_tx;
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
+
+static bool override_outputDisabled = false;
+static int_fast32_t interrupts_lastTriggers[16] = {};
 
 static uint32_t batt_adcRawValue = 0;
 static int_fast16_t batt_mavgValue = -1;
@@ -601,7 +606,7 @@ int main(void) {
       "#           Starting flight control...           #\r\n"
       "#                                                #\r\n"
       "#                                                #\r\n"
-      "##################################################\r\n"
+      "##################################################\r\n\n"
   );
 
   HAL_Delay(250);
@@ -667,6 +672,7 @@ int main(void) {
 
     float targetYaw = 0.f, targetPitch = 0.f, targetRoll = 0.f;
     float yawError = 0.f, pitchError = 0.f, rollError = 0.f;
+    float yawErrorRate = 0.f, pitchErrorRate = 0.f, rollErrorRate = 0.f;
     float yawCorrection = 0.f, pitchCorrection = 0.f, rollCorrection = 0.f, cosineLossCorrection = 1.f;
     float motor1Power_FL = 0.f, motor2Power_RR = 0.f, motor3Power_FR = 0.f, motor4Power_RL = 0.f;
 
@@ -681,6 +687,11 @@ int main(void) {
 
     int_fast16_t rollCommand = radio_rxValues[0] - 1500;  // Channel 1 = right joystick horizontal
     rollCommand = rollCommand >= -radio_deadZone && rollCommand <= radio_deadZone ? 0 : rollCommand;
+
+    if (!integratorEnabled) {
+      pid_cumulativePitchError = 0.f;
+      pid_cumulativeRollError = 0.f;
+    }
 
     if (faDisabled) {
       pid_lastPitchError = NAN;
@@ -751,8 +762,8 @@ int main(void) {
       float cumulativePitchError = pid_cumulativePitchError;
       float cumulativeRollError = pid_cumulativeRollError;
 
-      float pitchErrorRate = (pitchError - pid_lastPitchError) / delta;
-      float rollErrorRate = (rollError - pid_lastRollError) / delta;
+      pitchErrorRate = (pitchError - pid_lastPitchError) / delta;
+      rollErrorRate = (rollError - pid_lastRollError) / delta;
       if (isnanf(pitchErrorRate) || isinff(pitchErrorRate)) { pitchErrorRate = 0.f; }
       if (isnanf(rollErrorRate) || isinff(rollErrorRate)) { rollErrorRate = 0.f; }
 
@@ -789,32 +800,34 @@ int main(void) {
     motor3Pwm_FR = motor3Pwm_FR < 1000 ? 1000 : (motor3Pwm_FR > 2000 ? 2000 : motor3Pwm_FR);
     motor4Pwm_RL = motor4Pwm_RL < 1000 ? 1000 : (motor4Pwm_RL > 2000 ? 2000 : motor4Pwm_RL);
 
-    MOTOR_1_FL_PWM_CCR = outputEnabled ? motor1Pwm_FL : 1000;
-    MOTOR_2_RR_PWM_CCR = outputEnabled ? motor2Pwm_RR : 1000;
-    MOTOR_3_FR_PWM_CCR = outputEnabled ? motor3Pwm_FR : 1000;
-    MOTOR_4_RL_PWM_CCR = outputEnabled ? motor4Pwm_RL : 1000;
+    MOTOR_1_FL_PWM_CCR = (outputEnabled && !override_outputDisabled) ? motor1Pwm_FL : 1000;
+    MOTOR_2_RR_PWM_CCR = (outputEnabled && !override_outputDisabled) ? motor2Pwm_RR : 1000;
+    MOTOR_3_FR_PWM_CCR = (outputEnabled && !override_outputDisabled) ? motor3Pwm_FR : 1000;
+    MOTOR_4_RL_PWM_CCR = (outputEnabled && !override_outputDisabled) ? motor4Pwm_RL : 1000;
 
     if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
       Serial_Transmitf_DMA(
           "\x1B[?25l"  // Hide cursor
-          "\x1B[16F"   // Move cursor up 16 lines and to the start of the line
-          "\x1B[0K--------------------------------------------------------------------------------\r\n"
-          "\x1B[0KStatus      : IMU: %s (%4d us.), ALT: %s (%4d us.), Tick: %10d us.\r\n"
-          "\x1B[0KRadio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\r\n"
-          "\x1B[0KTrims       : %7.4fH %7.4fP %7.4fR\r\n"
-          "\x1B[0KPID Gains   : %7.4fP %7.4fI %7.4fD\r\n"
-          "\x1B[0KTarget      : %7.2fY %7.2fP %7.2fR\r\n"
-          "\x1B[0KOrientation : %7.2fH %7.2fP %7.2fR\r\n"
-          "\x1B[0KErrors      : %7.4fY %7.4fP %7.4fR\r\n"
-          "\x1B[0KCumu. Err.  : %7.4fY %7.4fP %7.4fR\r\n"
-          "\x1B[0KCorrections : %7.4fY %7.4fP %7.4fR %7.4fCos \r\n"
-          "\x1B[0KAtmosphere  : %.2fC, %.2fPa\r\n"
-          "\x1B[0KPowers      : %5.1f%% %5.1f%%\r\n"
-          "\x1B[0K              %5.1f%% %5.1f%%\r\n"
-          "\x1B[0KBatt volt.  : %.2f V\r\n"
-          "\x1B[0Kmspi        : %.2f ms.\r\n"
-          "\x1B[0K--------------------------------------------------------------------------------\r\n"
-          "\x1B[0K%c > %s"
+          "\x1B[17F"   // Move cursor up 17 lines and to the start of the line
+          "----------------------------------------------------------------\x1B[0K\r\n"
+          "Status      : IMU: %s (%4d us.), ALT: %s (%4d us.), Tick: %10d us.\x1B[0K\r\n"
+          "Radio       : %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d, %4d\x1B[0K\r\n"
+          "Trims       : %7.4fH %7.4fP %7.4fR\x1B[0K\r\n"
+          "PID Gains   : %7.4fP %7.4fI %7.4fD\x1B[0K\r\n"
+          "Orientation : %7.2fH %7.2fP %7.2fR\x1B[0K\r\n"
+          "Target      : %7.2fY %7.2fP %7.2fR\x1B[0K\r\n"
+          "Errors      : %7.4fY %7.4fP %7.4fR\x1B[0K\r\n"
+          "Cumu. Err.  : %7.4fY %7.4fP %7.4fR\x1B[0K\r\n"
+          "Error rate  : %7.3fY %7.3fP %7.3fR\x1B[0K\r\n"
+          "Corrections : %7.4fY %7.4fP %7.4fR %7.4fCos \x1B[0K\r\n"
+          "Atmosphere  : %.2fC, %.2fPa\x1B[0K\r\n"
+          "Powers      : %5.1f%% %5.1f%%\x1B[0K\r\n"
+          "              %5.1f%% %5.1f%%\x1B[0K\r\n"
+          "Batt volt.  : %.2f V\x1B[0K\r\n"
+          "mspi        : %.2f ms.\x1B[0K\r\n"
+          "----------------------------------------------------------------\x1B[0K\r\n"
+          "%c > %s\x1B[0K"
+          "\x1B[0J"     // Delete until end of screen
           "\x1B[?25h",  // Show cursor
           text_status + (orientationDataValid ? 13 : 0),
           imuAcquisitionTime,
@@ -837,18 +850,21 @@ int main(void) {
           proportionalGain,
           integralGain,
           derivativeGain,
-          targetYaw,
-          targetPitch,
-          targetRoll,
           heading,
           pitch,
           roll,
+          targetYaw,
+          targetPitch,
+          targetRoll,
           yawError,
           pitchError,
           rollError,
           0.f,
           pid_cumulativePitchError,
           pid_cumulativeRollError,
+          yawErrorRate,
+          pitchErrorRate,
+          rollErrorRate,
           yawCorrection,
           pitchCorrection,
           rollCorrection,
@@ -1142,7 +1158,7 @@ static void MX_TIM2_Init(void) {
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 108 - 1;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 2147483647;
+  htim2.Init.Period = 4294967295;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK) { Error_Handler(); }
@@ -1432,6 +1448,10 @@ static void MX_GPIO_Init(void) {
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USB_OverCurrent_GPIO_Port, &GPIO_InitStruct);
 
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 4, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
@@ -1505,6 +1525,15 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
       }
     }
     HAL_UARTEx_ReceiveToIdle_DMA(&WLSER_UART, wlser_rxBuffer, 32);
+  }
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+  int_fast32_t tick = HAL_GetTick();
+  if (GPIO_Pin == GPIO_PIN_13 && tick - interrupts_lastTriggers[13] > INTERRUPT_DEBOUNCE) {
+    override_outputDisabled = !override_outputDisabled;
+    HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, override_outputDisabled);
+    interrupts_lastTriggers[13] = tick;
   }
 }
 
