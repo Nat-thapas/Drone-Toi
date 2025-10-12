@@ -73,7 +73,7 @@
 #define MOTOR_4_RL_PWM_CCR htim3.Instance->CCR3
 
 #define BATT_SENSOR_ADC hadc1
-#define BATT_VOLTAGE_MULTIPLIER 19.2f
+#define BATT_VOLTAGE_MULTIPLIER 19.375f
 
 #define INTERRUPT_DEBOUNCE 250
 
@@ -175,9 +175,9 @@ static float imu_trimRoll = 3.5f;
 static int_fast32_t pid_minLoopPeriod = 10000;  // us.
 static int_fast32_t pid_lastLoopTime_us = 0;
 static float pid_proportionalGain = 0.1f;
-static float pid_integralGain = 0.f;
+static float pid_integralGain = 0.f;  // 0.1f;
 static float pid_derivativeGain = 0.0125f;
-static float pid_cumulativeErrorLimit = 0.5f;
+static float pid_cumulativeErrorLimit = 1.5f;
 // Integrator will only be active if current error is less than or equal to threshold degrees
 static float pid_integratorActiveThreshold = 2.5f;
 static float pid_mavgYawRate = NAN;
