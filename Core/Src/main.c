@@ -674,17 +674,17 @@ int main(void) {
     if (isnanf(pid_mavgYawRate) || isinff(pid_mavgYawRate)) {
       pid_mavgYawRate = yawRate;
     } else {
-      pid_mavgYawRate = (pid_mavgYawRate * 3 / 4) + (yawRate / 4);
+      pid_mavgYawRate = (pid_mavgYawRate * 3.f / 4.f) + (yawRate / 4.f);
     }
     if (isnanf(pid_mavgPitchRate) || isinff(pid_mavgPitchRate)) {
       pid_mavgPitchRate = pitchRate;
     } else {
-      pid_mavgPitchRate = (pid_mavgPitchRate * 3 / 4) + (pitchRate / 4);
+      pid_mavgPitchRate = (pid_mavgPitchRate * 3.f / 4.f) + (pitchRate / 4.f);
     }
     if (isnanf(pid_mavgRollRate) || isinff(pid_mavgRollRate)) {
       pid_mavgRollRate = rollRate;
     } else {
-      pid_mavgRollRate = (pid_mavgRollRate * 3 / 4) + (rollRate / 4);
+      pid_mavgRollRate = (pid_mavgRollRate * 3.f / 4.f) + (rollRate / 4.f);
     }
 
     yawRate = pid_mavgYawRate;
