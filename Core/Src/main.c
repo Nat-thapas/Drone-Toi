@@ -73,7 +73,7 @@
 #define MOTOR_4_RL_PWM_CCR htim3.Instance->CCR3
 
 #define BATT_SENSOR_ADC hadc1
-#define BATT_VOLTAGE_MULTIPLIER 19.4f
+#define BATT_VOLTAGE_MULTIPLIER 19.2f
 
 #define INTERRUPT_DEBOUNCE 250
 
@@ -166,7 +166,7 @@ static int_fast16_t radio_deadZone = 25;
 static int_fast16_t radio_consecutiveErrors = 0;
 static const float radio_targetAngleLimits[3] = {5.f, 10.f, 30.f};
 
-static float control_yawSensitivityMultiplier = 0.25f;
+static float control_yawSensitivityMultiplier = 0.1f;
 
 static float imu_trimHeading = 0.f;
 static float imu_trimPitch = -0.2f;
@@ -174,14 +174,15 @@ static float imu_trimRoll = 3.5f;
 
 static int_fast32_t pid_minLoopPeriod = 10000;  // us.
 static int_fast32_t pid_lastLoopTime_us = 0;
-static float pid_proportionalGain = 0.3f;
-static float pid_integralGain = 1.f;
-static float pid_derivativeGain = 0.025f;
+static float pid_proportionalGain = 0.1f;
+static float pid_integralGain = 0.f;
+static float pid_derivativeGain = 0.0125f;
 static float pid_cumulativeErrorLimit = 0.5f;
 // Integrator will only be active if current error is less than or equal to threshold degrees
 static float pid_integratorActiveThreshold = 2.5f;
-static float pid_lastRollError = NAN;
-static float pid_lastPitchError = NAN;
+static float pid_mavgYawRate = NAN;
+static float pid_mavgPitchRate = NAN;
+static float pid_mavgRollRate = NAN;
 static float pid_cumulativeRollError = 0.f;
 static float pid_cumulativePitchError = 0.f;
 
@@ -637,7 +638,9 @@ int main(void) {
 
     int_fast32_t imuAcquisitionStart = GetTickPrecise();
     bno055_vector_t orientationVector;
-    bool orientationDataValid = bno055_getVectorEuler(&orientationVector);
+    bno055_vector_t angularVelocityVector;
+    bool orientationDataValid =
+        bno055_getVectorGyroscope(&angularVelocityVector) && bno055_getVectorEuler(&orientationVector);
     int_fast32_t imuAcquisitionTime = GetTickPrecise() - imuAcquisitionStart;
 
     int_fast32_t altAcquisitionStart = GetTickPrecise();
@@ -664,6 +667,30 @@ int main(void) {
     float pitch = -orientationVector.y + pitchTrim;  // + = nose up
     float roll = orientationVector.z - rollTrim;     // + = right wing down
 
+    float yawRate = angularVelocityVector.x;
+    float pitchRate = angularVelocityVector.y;
+    float rollRate = angularVelocityVector.z;
+
+    if (isnanf(pid_mavgYawRate) || isinff(pid_mavgYawRate)) {
+      pid_mavgYawRate = yawRate;
+    } else {
+      pid_mavgYawRate = (pid_mavgYawRate * 3 / 4) + (yawRate / 4);
+    }
+    if (isnanf(pid_mavgPitchRate) || isinff(pid_mavgPitchRate)) {
+      pid_mavgPitchRate = pitchRate;
+    } else {
+      pid_mavgPitchRate = (pid_mavgPitchRate * 3 / 4) + (pitchRate / 4);
+    }
+    if (isnanf(pid_mavgRollRate) || isinff(pid_mavgRollRate)) {
+      pid_mavgRollRate = rollRate;
+    } else {
+      pid_mavgRollRate = (pid_mavgRollRate * 3 / 4) + (rollRate / 4);
+    }
+
+    yawRate = pid_mavgYawRate;
+    pitchRate = pid_mavgPitchRate;
+    rollRate = pid_mavgRollRate;
+
     // float proportionalGain = (radio_rxValues[4] - 1000.f) / 1000.f;
     // float derivativeGain = (radio_rxValues[5] - 1000.f) / 1000.f;
     float proportionalGain = pid_proportionalGain;
@@ -672,7 +699,6 @@ int main(void) {
 
     float targetYaw = 0.f, targetPitch = 0.f, targetRoll = 0.f;
     float yawError = 0.f, pitchError = 0.f, rollError = 0.f;
-    float yawErrorRate = 0.f, pitchErrorRate = 0.f, rollErrorRate = 0.f;
     float yawCorrection = 0.f, pitchCorrection = 0.f, rollCorrection = 0.f, cosineLossCorrection = 1.f;
     float motor1Power_FL = 0.f, motor2Power_RR = 0.f, motor3Power_FR = 0.f, motor4Power_RL = 0.f;
 
@@ -694,25 +720,20 @@ int main(void) {
     }
 
     if (faDisabled) {
-      pid_lastPitchError = NAN;
-      pid_lastRollError = NAN;
       pid_cumulativePitchError = 0.f;
       pid_cumulativeRollError = 0.f;
 
       float basePower = altCommand / 1000.f;
 
-      yawCorrection = yawCommand * targetAngleLimit / 200000.f;
-      pitchCorrection = pitchCommand * targetAngleLimit / 200000.f;
-      rollCorrection = rollCommand * targetAngleLimit / 200000.f;
+      yawCorrection = yawCommand * targetAngleLimit / 600000.f;
+      pitchCorrection = pitchCommand * targetAngleLimit / 600000.f;
+      rollCorrection = rollCommand * targetAngleLimit / 600000.f;
 
-      motor1Power_FL = basePower + rollCorrection + pitchCorrection - yawCorrection;
-      motor2Power_RR = basePower - rollCorrection - pitchCorrection - yawCorrection;
-      motor3Power_FR = basePower - rollCorrection + pitchCorrection + yawCorrection;
-      motor4Power_RL = basePower + rollCorrection - pitchCorrection + yawCorrection;
+      motor1Power_FL = basePower - yawCorrection + pitchCorrection + rollCorrection;
+      motor2Power_RR = basePower - yawCorrection - pitchCorrection - rollCorrection;
+      motor3Power_FR = basePower + yawCorrection + pitchCorrection - rollCorrection;
+      motor4Power_RL = basePower + yawCorrection - pitchCorrection + rollCorrection;
     } else if (!orientationDataValid) {
-      pid_lastPitchError = NAN;
-      pid_lastRollError = NAN;
-
       float basePower = altCommand / 1000.f;
 
       motor1Power_FL = basePower;
@@ -720,17 +741,11 @@ int main(void) {
       motor3Power_FR = basePower;
       motor4Power_RL = basePower;
     } else if (altCommand == 0) {
-      pid_lastPitchError = NAN;
-      pid_lastRollError = NAN;
-
       motor1Power_FL = 0.f;
       motor2Power_RR = 0.f;
       motor3Power_FR = 0.f;
       motor4Power_RL = 0.f;
     } else if (altCommand == 1000) {
-      pid_lastPitchError = NAN;
-      pid_lastRollError = NAN;
-
       motor1Power_FL = 1.f;
       motor2Power_RR = 1.f;
       motor3Power_FR = 1.f;
@@ -748,31 +763,15 @@ int main(void) {
       pitchError = targetPitch - pitch;
       rollError = targetRoll - roll;
 
-      if (integratorEnabled && pitchError >= -pid_integratorActiveThreshold &&
-          pitchError <= pid_integratorActiveThreshold) {
-        pid_cumulativePitchError += pitchError * delta;
-        pid_cumulativePitchError = clamp(pid_cumulativePitchError, -pid_cumulativeErrorLimit, pid_cumulativeErrorLimit);
-      }
-      if (integratorEnabled && rollError >= -pid_integratorActiveThreshold &&
-          rollError <= pid_integratorActiveThreshold) {
-        pid_cumulativeRollError += rollError * delta;
-        pid_cumulativeRollError = clamp(pid_cumulativeRollError, -pid_cumulativeErrorLimit, pid_cumulativeErrorLimit);
-      }
-
       float cumulativePitchError = pid_cumulativePitchError;
       float cumulativeRollError = pid_cumulativeRollError;
-
-      pitchErrorRate = (pitchError - pid_lastPitchError) / delta;
-      rollErrorRate = (rollError - pid_lastRollError) / delta;
-      if (isnanf(pitchErrorRate) || isinff(pitchErrorRate)) { pitchErrorRate = 0.f; }
-      if (isnanf(rollErrorRate) || isinff(rollErrorRate)) { rollErrorRate = 0.f; }
 
       float proportionalPitchCorrection = pitchError * proportionalGain / 100.f;
       float proportionalRollCorrection = rollError * proportionalGain / 100.f;
       float integralPitchCorrection = cumulativePitchError * integralGain / 100.f;
       float integralRollCorrection = cumulativeRollError * integralGain / 100.f;
-      float derivativePitchCorrection = pitchErrorRate * derivativeGain / 100.f;
-      float derivativeRollCorrection = rollErrorRate * derivativeGain / 100.f;
+      float derivativePitchCorrection = pitchRate * derivativeGain / 100.f;
+      float derivativeRollCorrection = rollRate * derivativeGain / 100.f;
 
       yawCorrection = yawError;
       pitchCorrection = proportionalPitchCorrection + integralPitchCorrection + derivativePitchCorrection;
@@ -781,13 +780,25 @@ int main(void) {
       cosineLossCorrection = 1.f / (cosf(roll / 180.f * M_PI) * cosf(pitch / 180.f * M_PI));
       if (isnanf(cosineLossCorrection) || isinff(cosineLossCorrection)) { cosineLossCorrection = 1.f; }
 
-      motor1Power_FL = basePower * cosineLossCorrection + rollCorrection + pitchCorrection - yawCorrection;
-      motor2Power_RR = basePower * cosineLossCorrection - rollCorrection - pitchCorrection - yawCorrection;
-      motor3Power_FR = basePower * cosineLossCorrection - rollCorrection + pitchCorrection + yawCorrection;
-      motor4Power_RL = basePower * cosineLossCorrection + rollCorrection - pitchCorrection + yawCorrection;
+      motor1Power_FL = basePower * cosineLossCorrection - yawCorrection + pitchCorrection + rollCorrection;
+      motor2Power_RR = basePower * cosineLossCorrection - yawCorrection - pitchCorrection - rollCorrection;
+      motor3Power_FR = basePower * cosineLossCorrection + yawCorrection + pitchCorrection - rollCorrection;
+      motor4Power_RL = basePower * cosineLossCorrection + yawCorrection - pitchCorrection + rollCorrection;
 
-      pid_lastPitchError = pitchError;
-      pid_lastRollError = rollError;
+      bool controlSaturated =
+          (motor1Power_FL < 0.f || motor1Power_FL > 1.f) || (motor2Power_RR < 0.f || motor2Power_RR > 1.f) ||
+          (motor3Power_FR < 0.f || motor3Power_FR > 1.f) || (motor4Power_RL < 0.f || motor4Power_RL > 1.f);
+
+      if (integratorEnabled && !controlSaturated && pitchError >= -pid_integratorActiveThreshold &&
+          pitchError <= pid_integratorActiveThreshold) {
+        pid_cumulativePitchError += pitchError * delta;
+        pid_cumulativePitchError = clamp(pid_cumulativePitchError, -pid_cumulativeErrorLimit, pid_cumulativeErrorLimit);
+      }
+      if (integratorEnabled && !controlSaturated && rollError >= -pid_integratorActiveThreshold &&
+          rollError <= pid_integratorActiveThreshold) {
+        pid_cumulativeRollError += rollError * delta;
+        pid_cumulativeRollError = clamp(pid_cumulativeRollError, -pid_cumulativeErrorLimit, pid_cumulativeErrorLimit);
+      }
     }
 
     int_fast16_t motor1Pwm_FL = motor1Power_FL * 4000.f + 4000.f;
@@ -815,10 +826,10 @@ int main(void) {
           "Trims       : %7.4fH %7.4fP %7.4fR\x1B[0K\r\n"
           "PID Gains   : %7.4fP %7.4fI %7.4fD\x1B[0K\r\n"
           "Orientation : %7.2fH %7.2fP %7.2fR\x1B[0K\r\n"
+          "Angular vel.: %7.3fY %7.3fP %7.3fR\x1B[0K\r\n"
           "Target      : %7.2fY %7.2fP %7.2fR\x1B[0K\r\n"
           "Errors      : %7.4fY %7.4fP %7.4fR\x1B[0K\r\n"
           "Cumu. Err.  : %7.4fY %7.4fP %7.4fR\x1B[0K\r\n"
-          "Error rate  : %7.3fY %7.3fP %7.3fR\x1B[0K\r\n"
           "Corrections : %7.4fY %7.4fP %7.4fR %7.4fCos \x1B[0K\r\n"
           "Atmosphere  : %.2fC, %.2fPa\x1B[0K\r\n"
           "Powers      : %5.1f%% %5.1f%%\x1B[0K\r\n"
@@ -853,6 +864,9 @@ int main(void) {
           heading,
           pitch,
           roll,
+          yawRate,
+          pitchRate,
+          rollRate,
           targetYaw,
           targetPitch,
           targetRoll,
@@ -862,9 +876,6 @@ int main(void) {
           0.f,
           pid_cumulativePitchError,
           pid_cumulativeRollError,
-          yawErrorRate,
-          pitchErrorRate,
-          rollErrorRate,
           yawCorrection,
           pitchCorrection,
           rollCorrection,
@@ -1471,7 +1482,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
       }
       radio_consecutiveErrors = 0;
       // Serial_Transmitln_DMA("Received and processed valid radio packet");
-      HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, GPIO_PIN_RESET);
+      // HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, GPIO_PIN_RESET);
       HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
     } else {
       radio_consecutiveErrors++;
@@ -1482,7 +1493,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
       //     radio_rxBuffer[1]
       // );
       HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+      // HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, HAL_GetTick() & (1 << 6) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
       if (radio_consecutiveErrors >= RADIO_CONSECUTIVE_ERROR_THRESHOLD) {
         Serial_Transmitf_DMA(
