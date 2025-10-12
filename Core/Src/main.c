@@ -275,10 +275,10 @@ static void command_handle() {
       len--;
     }
 
-    MOTOR_1_FL_PWM_CCR = 1000;
-    MOTOR_2_RR_PWM_CCR = 1000;
-    MOTOR_3_FR_PWM_CCR = 1000;
-    MOTOR_4_RL_PWM_CCR = 1000;
+    MOTOR_1_FL_PWM_CCR = 4000;
+    MOTOR_2_RR_PWM_CCR = 4000;
+    MOTOR_3_FR_PWM_CCR = 4000;
+    MOTOR_4_RL_PWM_CCR = 4000;
 
     char msg[] = "E-STOP Activated, shutting down...\r\n";
     size_t len = strlen(msg);
@@ -790,20 +790,20 @@ int main(void) {
       pid_lastRollError = rollError;
     }
 
-    int_fast16_t motor1Pwm_FL = motor1Power_FL * 1000.f + 1000.f;
-    int_fast16_t motor2Pwm_RR = motor2Power_RR * 1000.f + 1000.f;
-    int_fast16_t motor3Pwm_FR = motor3Power_FR * 1000.f + 1000.f;
-    int_fast16_t motor4Pwm_RL = motor4Power_RL * 1000.f + 1000.f;
+    int_fast16_t motor1Pwm_FL = motor1Power_FL * 4000.f + 4000.f;
+    int_fast16_t motor2Pwm_RR = motor2Power_RR * 4000.f + 4000.f;
+    int_fast16_t motor3Pwm_FR = motor3Power_FR * 4000.f + 4000.f;
+    int_fast16_t motor4Pwm_RL = motor4Power_RL * 4000.f + 4000.f;
 
-    motor1Pwm_FL = motor1Pwm_FL < 1000 ? 1000 : (motor1Pwm_FL > 2000 ? 2000 : motor1Pwm_FL);
-    motor2Pwm_RR = motor2Pwm_RR < 1000 ? 1000 : (motor2Pwm_RR > 2000 ? 2000 : motor2Pwm_RR);
-    motor3Pwm_FR = motor3Pwm_FR < 1000 ? 1000 : (motor3Pwm_FR > 2000 ? 2000 : motor3Pwm_FR);
-    motor4Pwm_RL = motor4Pwm_RL < 1000 ? 1000 : (motor4Pwm_RL > 2000 ? 2000 : motor4Pwm_RL);
+    motor1Pwm_FL = motor1Pwm_FL < 4000 ? 4000 : (motor1Pwm_FL > 8000 ? 8000 : motor1Pwm_FL);
+    motor2Pwm_RR = motor2Pwm_RR < 4000 ? 4000 : (motor2Pwm_RR > 8000 ? 8000 : motor2Pwm_RR);
+    motor3Pwm_FR = motor3Pwm_FR < 4000 ? 4000 : (motor3Pwm_FR > 8000 ? 8000 : motor3Pwm_FR);
+    motor4Pwm_RL = motor4Pwm_RL < 4000 ? 4000 : (motor4Pwm_RL > 8000 ? 8000 : motor4Pwm_RL);
 
-    MOTOR_1_FL_PWM_CCR = (outputEnabled && !override_outputDisabled) ? motor1Pwm_FL : 1000;
-    MOTOR_2_RR_PWM_CCR = (outputEnabled && !override_outputDisabled) ? motor2Pwm_RR : 1000;
-    MOTOR_3_FR_PWM_CCR = (outputEnabled && !override_outputDisabled) ? motor3Pwm_FR : 1000;
-    MOTOR_4_RL_PWM_CCR = (outputEnabled && !override_outputDisabled) ? motor4Pwm_RL : 1000;
+    MOTOR_1_FL_PWM_CCR = (outputEnabled && !override_outputDisabled) ? motor1Pwm_FL : 4000;
+    MOTOR_2_RR_PWM_CCR = (outputEnabled && !override_outputDisabled) ? motor2Pwm_RR : 4000;
+    MOTOR_3_FR_PWM_CCR = (outputEnabled && !override_outputDisabled) ? motor3Pwm_FR : 4000;
+    MOTOR_4_RL_PWM_CCR = (outputEnabled && !override_outputDisabled) ? motor4Pwm_RL : 4000;
 
     if (currentTick_us - telemetry_lastTransmission_us > telemetry_interval) {
       Serial_Transmitf_DMA(
@@ -1190,9 +1190,9 @@ static void MX_TIM3_Init(void) {
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 108 - 1;
+  htim3.Init.Prescaler = 27 - 1;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 2500 - 1;
+  htim3.Init.Period = 10000 - 1;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim3) != HAL_OK) { Error_Handler(); }
@@ -1203,7 +1203,7 @@ static void MX_TIM3_Init(void) {
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK) { Error_Handler(); }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 1000;
+  sConfigOC.Pulse = 4000;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) { Error_Handler(); }
@@ -1548,10 +1548,10 @@ void Error_Handler(void) {
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
 
-  MOTOR_1_FL_PWM_CCR = 1000;
-  MOTOR_2_RR_PWM_CCR = 1000;
-  MOTOR_3_FR_PWM_CCR = 1000;
-  MOTOR_4_RL_PWM_CCR = 1000;
+  MOTOR_1_FL_PWM_CCR = 4000;
+  MOTOR_2_RR_PWM_CCR = 4000;
+  MOTOR_3_FR_PWM_CCR = 4000;
+  MOTOR_4_RL_PWM_CCR = 4000;
 
   HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, GPIO_PIN_RESET);
