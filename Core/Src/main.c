@@ -169,12 +169,12 @@ static const float radio_targetAngleLimits[3] = {5.f, 10.f, 30.f};
 static float control_yawSensitivityMultiplier = 0.1f;
 
 static float imu_trimHeading = 0.f;
-static float imu_trimPitch = 0.2f;
-static float imu_trimRoll = 3.5f;
+static float imu_trimPitch = -0.5f;
+static float imu_trimRoll = 4.625f;
 
 static int_fast32_t pid_minLoopPeriod = 10000;  // us.
 static int_fast32_t pid_lastLoopTime_us = 0;
-static float pid_proportionalGain = 0.1f;
+static float pid_proportionalGain = 0.075f;
 static float pid_integralGain = 0.f;  // 0.1f;
 static float pid_derivativeGain = 0.0125f;
 static float pid_cumulativeErrorLimit = 1.5f;
@@ -667,9 +667,9 @@ int main(void) {
     float pitch = -orientationVector.y - pitchTrim;  // + = nose up
     float roll = orientationVector.z - rollTrim;     // + = right wing down
 
-    float yawRate = angularVelocityVector.x;
-    float pitchRate = -angularVelocityVector.y;
-    float rollRate = angularVelocityVector.z;
+    float yawRate = -angularVelocityVector.z;
+    float pitchRate = angularVelocityVector.y;
+    float rollRate = -angularVelocityVector.x;
 
     if (isnanf(pid_mavgYawRate) || isinff(pid_mavgYawRate)) {
       pid_mavgYawRate = yawRate;
@@ -770,8 +770,8 @@ int main(void) {
       float proportionalRollCorrection = rollError * proportionalGain / 100.f;
       float integralPitchCorrection = cumulativePitchError * integralGain / 100.f;
       float integralRollCorrection = cumulativeRollError * integralGain / 100.f;
-      float derivativePitchCorrection = pitchRate * derivativeGain / 100.f;
-      float derivativeRollCorrection = rollRate * derivativeGain / 100.f;
+      float derivativePitchCorrection = -pitchRate * derivativeGain / 100.f;
+      float derivativeRollCorrection = -rollRate * derivativeGain / 100.f;
 
       yawCorrection = yawError;
       pitchCorrection = proportionalPitchCorrection + integralPitchCorrection + derivativePitchCorrection;
@@ -779,6 +779,7 @@ int main(void) {
 
       cosineLossCorrection = clamp(1.f / (cosf(roll / 180.f * M_PI) * cosf(pitch / 180.f * M_PI)), 1.f, 1.25f);
       if (isnanf(cosineLossCorrection) || isinff(cosineLossCorrection)) { cosineLossCorrection = 1.f; }
+      // cosineLossCorrection = 1.f;
 
       motor1Power_FL = basePower * cosineLossCorrection - yawCorrection + pitchCorrection + rollCorrection;
       motor2Power_RR = basePower * cosineLossCorrection - yawCorrection - pitchCorrection - rollCorrection;
