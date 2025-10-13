@@ -169,7 +169,7 @@ static const float radio_targetAngleLimits[3] = {5.f, 10.f, 30.f};
 static float control_yawSensitivityMultiplier = 0.1f;
 
 static float imu_trimHeading = 0.f;
-static float imu_trimPitch = -0.2f;
+static float imu_trimPitch = 0.2f;
 static float imu_trimRoll = 3.5f;
 
 static int_fast32_t pid_minLoopPeriod = 10000;  // us.
@@ -664,11 +664,11 @@ int main(void) {
     float rollTrim = imu_trimRoll;
 
     float heading = orientationVector.x - headingTrim;
-    float pitch = -orientationVector.y + pitchTrim;  // + = nose up
+    float pitch = -orientationVector.y - pitchTrim;  // + = nose up
     float roll = orientationVector.z - rollTrim;     // + = right wing down
 
     float yawRate = angularVelocityVector.x;
-    float pitchRate = angularVelocityVector.y;
+    float pitchRate = -angularVelocityVector.y;
     float rollRate = angularVelocityVector.z;
 
     if (isnanf(pid_mavgYawRate) || isinff(pid_mavgYawRate)) {
@@ -777,7 +777,7 @@ int main(void) {
       pitchCorrection = proportionalPitchCorrection + integralPitchCorrection + derivativePitchCorrection;
       rollCorrection = proportionalRollCorrection + integralRollCorrection + derivativeRollCorrection;
 
-      cosineLossCorrection = 1.f / (cosf(roll / 180.f * M_PI) * cosf(pitch / 180.f * M_PI));
+      cosineLossCorrection = clamp(1.f / (cosf(roll / 180.f * M_PI) * cosf(pitch / 180.f * M_PI)), 1.f, 1.25f);
       if (isnanf(cosineLossCorrection) || isinff(cosineLossCorrection)) { cosineLossCorrection = 1.f; }
 
       motor1Power_FL = basePower * cosineLossCorrection - yawCorrection + pitchCorrection + rollCorrection;
