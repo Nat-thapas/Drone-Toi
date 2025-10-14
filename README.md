@@ -23,13 +23,13 @@ Control is handled by FS-I6X transmitter and FS-IA6B radio receiver. The STM32 f
 
 The drone have 2 command line interfaces you can use to view the telemetry and configure some configurable values. The interfaces are as follow:
 
-1. Virtual COM port via ST-LINK (USART3 in UART mode)
+1. Virtual COM port via ST-LINK (USART3 in UART mode, 8N1 1500000 bps)
 
-   To connect to this interface, use a USB cable to connect to ST-LINK using any terminal emulator and set baud rate to 1,500,000 (1.5 Mbps)
+   To connect to this interface, use a USB cable to connect to ST-LINK using any terminal emulator and set baud rate to 1500000 (1.5 Mbps).
 
-2. Wireless serial communication via ESP32 (USART6 in UART mode)
+2. Wireless serial communication via ESP32 (USART6 in UART mode, 8N1 460800 bps)
 
-   To connect to this interface, connect to the ESP32 Wi-Fi as configured using `socat` or similar tool in raw mode
+   To connect to this interface, connect to the ESP32 Wi-Fi as configured using `socat` or similar tool in raw mode. Local echo is not needed and backspace is supported.
 
 After you've connected to one of the interface, the telemetry data will be visible. You can also enter commands to set configuration values as follow:
 
