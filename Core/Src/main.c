@@ -30,6 +30,7 @@
 #include "bno055.h"
 #include "bno055_stm32.h"
 #include "float.h"
+#include "inttypes.h"
 #include "math.h"
 #include "stdarg.h"
 #include "stdio.h"
@@ -440,7 +441,7 @@ static void command_handle() {
           command++;
           len--;
         }
-        sscanf(command, "%d", &pid_minLoopPeriod);
+        sscanf(command, "%" PRIdFAST32, &pid_minLoopPeriod);
       }
     } else if (len >= 4 && strprei(command, "trim")) {
       // set trim
@@ -496,7 +497,7 @@ static void command_handle() {
           command++;
           len--;
         }
-        sscanf(command, "%d", &radio_deadZone);
+        sscanf(command, "%" PRIdFAST16, &radio_deadZone);
       }
     } else if (len >= 7 && strprei(command, "control")) {
       // set control
@@ -534,7 +535,7 @@ static void command_handle() {
           command++;
           len--;
         }
-        sscanf(command, "%d", &telemetry_interval);
+        sscanf(command, "%" PRIdFAST32, &telemetry_interval);
       }
     } else if (len >= 3 && strprei(command, "imu")) {
       // set imu
