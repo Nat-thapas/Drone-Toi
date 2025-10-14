@@ -19,6 +19,8 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
+#include <stdint.h>
+
 #include "string.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -29,7 +31,6 @@
 #include "bno055_stm32.h"
 #include "float.h"
 #include "math.h"
-#include "mod.h"
 #include "stdarg.h"
 #include "stdio.h"
 #include "stdlib.h"
@@ -141,7 +142,7 @@ static int_fast32_t telemetry_lastTransmission_us = 0;
 static int_fast32_t telemetry_mavgProcTime = -1;
 static int_fast16_t telemetry_iterationCount = 0;
 
-static const char text_status[] = "\x1B[31mBAD\x1B[0m\0\x1B[32mOK \x1B[0m";
+// static const char text_status[] = "\x1B[31mBAD\x1B[0m\0\x1B[32mOK \x1B[0m";
 
 static uint8_t radio_rxBuffer[32] = {};
 static int_fast16_t radio_rxValues[10] = {
@@ -165,8 +166,8 @@ static const float radio_targetAngleLimits[3] = {5.f, 10.f, 30.f};
 static float control_yawAngleRate = 3.f;  // 3 * angleLimit degrees / sec at max input
 
 static float imu_trimHeading = 0.f;
-static float imu_trimPitch = -0.5f;
-static float imu_trimRoll = 4.625f;
+static float imu_trimPitch = 1.5f;
+static float imu_trimRoll = -1.25f;
 // Lower value = lower frequency cutoff, the filtering algorithm is exponetially weighted moving average
 static float imu_yawRateFilteringAlpha = 0.125f;
 static float imu_pitchRateFilteringAlpha = 0.25f;
@@ -174,17 +175,20 @@ static float imu_rollRateFilteringAlpha = 0.25f;
 
 static int_fast32_t pid_minLoopPeriod = 10000;  // us.
 static int_fast32_t pid_lastLoopTime_us = 0;
+
 static float pid_y_proportionalGain = 0.2f;
 static float pid_y_integralGain = 0.2f;
-static float pid_y_derivativeGain = 0.025f;
+static float pid_y_derivativeGain = 0.15f;
 static float pid_y_cumulativeErrorLimit = 1.5f;
-static float pid_pr_proportionalGain = 0.5f;
+
+static float pid_pr_proportionalGain = 0.15f;
 static float pid_pr_integralGain = 0.2f;
-static float pid_pr_derivativeGain = 0.625f;
+static float pid_pr_derivativeGain = 0.1f;
 static float pid_pr_cumulativeErrorLimit = 1.5f;
+
 // Integrator will only be active if current error is less than or equal to threshold degrees
-static float pid_y_integratorActiveThreshold = 2.5f;
-static float pid_pr_integratorActiveThreshold = 2.5f;
+static float pid_y_integratorActiveThreshold = 5.f;
+static float pid_pr_integratorActiveThreshold = 5.f;
 static float pid_mavgYawRate = NAN;
 static float pid_mavgPitchRate = NAN;
 static float pid_mavgRollRate = NAN;
@@ -267,8 +271,13 @@ static inline float clamp(float val, float min, float max) {
   return val < min ? min : (val > max ? max : val);
 }
 
-__attribute__((optimize("O0"))) static void busyDelay(volatile uint32_t count) {
-  while (count--) { __NOP(); }
+static inline float cmodf(float a, float b) {
+  return fmod((fmod(a, b) + b), b);
+}
+
+static void DelayPrecise(uint32_t delay) {
+  uint32_t start = PRECISION_TIMER_COUNT;
+  while (PRECISION_TIMER_COUNT - start < delay);
 }
 
 static void command_handle() {
@@ -350,7 +359,7 @@ static void command_handle() {
           }
           sscanf(command, "%f", &pid_y_derivativeGain);
         } else if (len >= 3 && strprei(command, "cel")) {
-          // set pid cel
+          // set pid y cel
           command += 3;
           len -= 3;
           while (*command == 0x20) {
@@ -359,7 +368,7 @@ static void command_handle() {
           }
           sscanf(command, "%f", &pid_y_cumulativeErrorLimit);
         } else if (len >= 3 && strprei(command, "iat")) {
-          // set pid iat
+          // set pid y iat
           command += 3;
           len -= 3;
           while (*command == 0x20) {
@@ -527,6 +536,53 @@ static void command_handle() {
         }
         sscanf(command, "%d", &telemetry_interval);
       }
+    } else if (len >= 3 && strprei(command, "imu")) {
+      // set imu
+      command += 3;
+      len -= 3;
+      while (*command == 0x20) {
+        command++;
+        len--;
+      }
+
+      if (len >= 4 && strprei(command, "lpfa")) {
+        // set imu lpfa
+        command += 4;
+        len -= 4;
+        while (*command == 0x20) {
+          command++;
+          len--;
+        }
+
+        if (len >= 2 && strprei(command, "yr")) {
+          // set imu lpfa yr
+          command += 2;
+          len -= 2;
+          while (*command == 0x20) {
+            command++;
+            len--;
+          }
+          sscanf(command, "%f", &imu_yawRateFilteringAlpha);
+        } else if (len >= 2 && strprei(command, "pr")) {
+          // set imu lpfa pr
+          command += 2;
+          len -= 2;
+          while (*command == 0x20) {
+            command++;
+            len--;
+          }
+          sscanf(command, "%f", &imu_pitchRateFilteringAlpha);
+        } else if (len >= 2 && strprei(command, "rr")) {
+          // set imu lpfa rr
+          command += 2;
+          len -= 2;
+          while (*command == 0x20) {
+            command++;
+            len--;
+          }
+          sscanf(command, "%f", &imu_rollRateFilteringAlpha);
+        }
+      }
     }
   }
 
@@ -633,10 +689,12 @@ int main(void) {
         calibrationState.accel,
         calibrationState.mag
     );
-    HAL_GPIO_TogglePin(LED_Green_GPIO_Port, LED_Green_Pin);
-    HAL_Delay(250);
+    HAL_GPIO_TogglePin(LED_Blue_GPIO_Port, LED_Blue_Pin);
+    HAL_Delay(500);
   } while (!calibrationStateValid || calibrationState.sys != 0x03 || calibrationState.gyro != 0x03 ||
            calibrationState.mag != 0x03);
+
+  HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_SET);
 
   retry = 0;
 
@@ -711,17 +769,17 @@ int main(void) {
       batt_mavgValue = (batt_mavgValue * 15 / 16) + (batt_adcRawValue / 16);
     }
 
-    int_fast32_t imuAcquisitionStart = GetTickPrecise();
+    // int_fast32_t imuAcquisitionStart = GetTickPrecise();
     bno055_vector_t orientationVector;
     bno055_vector_t angularVelocityVector;
     bool orientationDataValid =
         bno055_getVectorGyroscope(&angularVelocityVector) && bno055_getVectorEuler(&orientationVector);
-    int_fast32_t imuAcquisitionTime = GetTickPrecise() - imuAcquisitionStart;
+    // int_fast32_t imuAcquisitionTime = GetTickPrecise() - imuAcquisitionStart;
 
-    int_fast32_t altAcquisitionStart = GetTickPrecise();
+    // int_fast32_t altAcquisitionStart = GetTickPrecise();
     float temperature, pressure, humidity;  // humidity only for BME280
-    bool atmosDataValid = bmp280_read_float(&bmp280, &temperature, &pressure, &humidity);
-    int_fast32_t altAcquisitionTime = GetTickPrecise() - altAcquisitionStart;
+    /* bool atmosDataValid = */ bmp280_read_float(&bmp280, &temperature, &pressure, &humidity);
+    // int_fast32_t altAcquisitionTime = GetTickPrecise() - altAcquisitionStart;
 
     // 1st switch, up = false = output off, down = true = output on
     bool outputEnabled = radio_parseBiStateSwitch(radio_rxValues[6]);
@@ -739,12 +797,12 @@ int main(void) {
     float rollTrim = imu_trimRoll;
 
     float heading = cmodf(orientationVector.x - headingTrim, 360.f);
-    float pitch = -orientationVector.y - pitchTrim;  // + = nose up
-    float roll = orientationVector.z - rollTrim;     // + = right wing down
+    float pitch = orientationVector.y - pitchTrim;  // + = nose up
+    float roll = -orientationVector.z - rollTrim;   // + = right wing down
 
     float yawRate = -angularVelocityVector.z;
-    float pitchRate = angularVelocityVector.y;
-    float rollRate = -angularVelocityVector.x;
+    float pitchRate = -angularVelocityVector.y;
+    float rollRate = angularVelocityVector.x;
 
     if (isnanf(pid_mavgYawRate) || isinff(pid_mavgYawRate)) {
       pid_mavgYawRate = yawRate;
@@ -779,7 +837,7 @@ int main(void) {
     float pr_integralGain = pid_pr_integralGain;
     float pr_derivativeGain = pid_pr_derivativeGain;
 
-    float targetHeading = 0.f, targetPitch = 0.f, targetRoll = 0.f;
+    float targetHeading = pid_targetHeading, targetPitch = 0.f, targetRoll = 0.f;
     float yawError = 0.f, pitchError = 0.f, rollError = 0.f;
     float proportionalYawCorrection = 0.f, integralYawCorrection = 0.f, derivativeYawCorrection = 0.f;
     float proportionalPitchCorrection = 0.f, integralPitchCorrection = 0.f, derivativePitchCorrection = 0.f;
@@ -840,11 +898,13 @@ int main(void) {
     } else {
       float basePower = altCommand / 1000.f;
 
-      if (isnanf(pid_targetHeading) || isinff(pid_targetHeading)) { targetHeading = heading; }
+      if (isnanf(targetHeading) || isinff(targetHeading)) { targetHeading = heading; }
       targetHeading =
           cmodf(targetHeading + (yawCommand / 500.f * targetAngleLimit * control_yawAngleRate * delta), 360.f);
       targetPitch = pitchCommand * targetAngleLimit / 500.f;
       targetRoll = rollCommand * targetAngleLimit / 500.f;
+
+      pid_targetHeading = targetHeading;
 
       yawError = cmodf(targetHeading - heading + 180.f, 360.f) - 180.f;
       pitchError = targetPitch - pitch;
@@ -902,10 +962,10 @@ int main(void) {
       }
     }
 
-    int_fast16_t motor1Pwm_FL = motor1Power_FL * 4000.f + 4000.f;
-    int_fast16_t motor2Pwm_RR = motor2Power_RR * 4000.f + 4000.f;
-    int_fast16_t motor3Pwm_FR = motor3Power_FR * 4000.f + 4000.f;
-    int_fast16_t motor4Pwm_RL = motor4Power_RL * 4000.f + 4000.f;
+    int_fast16_t motor1Pwm_FL = clamp(motor1Power_FL, 0.f, 1.f) * 4000.f + 4000.f;
+    int_fast16_t motor2Pwm_RR = clamp(motor2Power_RR, 0.f, 1.f) * 4000.f + 4000.f;
+    int_fast16_t motor3Pwm_FR = clamp(motor3Power_FR, 0.f, 1.f) * 4000.f + 4000.f;
+    int_fast16_t motor4Pwm_RL = clamp(motor4Power_RL, 0.f, 1.f) * 4000.f + 4000.f;
 
     motor1Pwm_FL = motor1Pwm_FL < 4000 ? 4000 : (motor1Pwm_FL > 8000 ? 8000 : motor1Pwm_FL);
     motor2Pwm_RR = motor2Pwm_RR < 4000 ? 4000 : (motor2Pwm_RR > 8000 ? 8000 : motor2Pwm_RR);
@@ -921,7 +981,7 @@ int main(void) {
       Serial_Transmitf_DMA(
           "\x1B[?25l"  // Hide cursor
           "\x1B[H"     // Move cursor to home (0, 0)
-          "----------------------------------------------------------------\x1B[0K\r\n"
+          "--------------------------------------------------------\x1B[0K\r\n"
           "Radio       : %4d, %4d, %4d, %4d\x1B[0K\r\n"
           "Trims       : %7.4fH %7.4fP %7.4fR\x1B[0K\r\n"
           "Gains   Yaw : %7.4fP %7.4fI %7.4fD\x1B[0K\r\n"
@@ -930,15 +990,15 @@ int main(void) {
           "Angular vel.: %7.3fY %7.3fP %7.3fR\x1B[0K\r\n"
           "Errors      : %7.4fY %7.4fP %7.4fR\x1B[0K\r\n"
           "Cumu. Err.  : %7.4fY %7.4fP %7.4fR\x1B[0K\r\n"
-          "Correct Yaw : %7.5fP %7.5fI %7.5fD\x1B[0K\r\n"
-          "      Pitch : %7.5fP %7.5fI %7.5fD\x1B[0K\r\n"
-          "      Roll  : %7.5fP %7.5fI %7.5fD\x1B[0K\r\n"
+          "Correct Yaw : %7.4fP %7.4fI %7.4fD\x1B[0K\r\n"
+          "      Pitch : %7.4fP %7.4fI %7.4fD\x1B[0K\r\n"
+          "      Roll  : %7.4fP %7.4fI %7.4fD\x1B[0K\r\n"
           "Powers      : %5.1f%% %5.1f%%\x1B[0K\r\n"
           " (x%7.5f) : %5.1f%% %5.1f%%\x1B[0K\r\n"
-          "Atmosphere  : %.2fC %.2fPa %5.2fm\x1B[0K\r\n"
+          "Atmosphere  : %.2fC %.2fPa (=%5.2fm)\x1B[0K\r\n"
           "Batt volt.  : %.2fV\x1B[0K\r\n"
           "mspi        : %.2fms.\x1B[0K\r\n"
-          "----------------------------------------------------------------\x1B[0K\r\n"
+          "--------------------------------------------------------\x1B[0K\r\n"
           "%c > %s\x1B[0K"
           "\x1B[0J"     // Delete until end of screen
           "\x1B[?25h",  // Show cursor
@@ -1669,7 +1729,7 @@ void Error_Handler(void) {
     HAL_GPIO_TogglePin(LED_Red_GPIO_Port, LED_Red_Pin);
     HAL_GPIO_TogglePin(LED_Green_GPIO_Port, LED_Green_Pin);
     HAL_GPIO_TogglePin(LED_Blue_GPIO_Port, LED_Blue_Pin);
-    busyDelay(2500000);
+    DelayPrecise(125000);
   }
   /* USER CODE END Error_Handler_Debug */
 }
