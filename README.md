@@ -1,4 +1,10 @@
-# Controls
+# Drone Toi
+
+A 12-inch STM32 based drone with custom from the ground up flight control.
+
+## Controls
+
+Control is handled by FS-I6X transmitter and FS-IA6B radio receiver. The STM32 flight controller receive data from the radio receiver via the i-BUS protocol (UART 8N1 115200 bps). Each channel is bound to the following:
 
 | Channel | Input                          | Control                          |
 | ------- | ------------------------------ | -------------------------------- |
@@ -13,7 +19,19 @@
 | 9       | SWC (3rd switch)               | Low/med/high control sensitivity |
 | 10      | SWD (4th switch)               | Disabled/enabled PID integrator  |
 
-# Commands
+## Telemetry and configuration
+
+The drone have 2 command line interfaces you can use to view the telemetry and configure some configurable values. The interfaces are as follow:
+
+1. Virtual COM port via ST-LINK (USART3 in UART mode)
+
+   To connect to this interface, use a USB cable to connect to ST-LINK using any terminal emulator and set baud rate to 1,500,000 (1.5 Mbps)
+
+2. Wireless serial communication via ESP32 (USART6 in UART mode)
+
+   To connect to this interface, connect to the ESP32 Wi-Fi as configured using `socat` or similar tool in raw mode
+
+After you've connected to one of the interface, the telemetry data will be visible. You can also enter commands to set configuration values as follow:
 
 Commands are comprised of space separated keywords in their respective order and are case-insensitive.
 
@@ -40,3 +58,5 @@ Commands are comprised of space separated keywords in their respective order and
 | SET      | IMU       | LPFA     | YR         | float     | Set IMU yaw rate low-pass filter alpha value                                         |
 | SET      | IMU       | LPFA     | PR         | float     | Set IMU pitch rate low-pass filter alpha value                                       |
 | SET      | IMU       | LPFA     | RR         | float     | Set IMU roll rate low-pass filter alpha value                                        |
+
+Values set via command are NOT persisted to flash memory and will be lost upon restart.
