@@ -46,6 +46,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+#define WAIT_FOR_CALIBRATION  // Comment to not wait for IMU calibration on startup
+
 #define RADIO_RX_UART huart1
 #define RADIO_TELEM_UART huart2
 #define SERIAL_UART huart3
@@ -177,14 +179,14 @@ static float imu_rollRateFilteringAlpha = 0.25f;
 static int_fast32_t pid_minLoopPeriod = 10000;  // us.
 static int_fast32_t pid_lastLoopTime_us = 0;
 
-static float pid_y_proportionalGain = 0.2f;
-static float pid_y_integralGain = 0.2f;
-static float pid_y_derivativeGain = 0.15f;
+static float pid_y_proportionalGain = 0.25f;
+static float pid_y_integralGain = 0.3f;
+static float pid_y_derivativeGain = 0.2f;
 static float pid_y_cumulativeErrorLimit = 1.5f;
 
 static float pid_pr_proportionalGain = 0.15f;
-static float pid_pr_integralGain = 0.2f;
-static float pid_pr_derivativeGain = 0.1f;
+static float pid_pr_integralGain = 0.25f;
+static float pid_pr_derivativeGain = 0.125f;
 static float pid_pr_cumulativeErrorLimit = 1.5f;
 
 // Integrator will only be active if current error is less than or equal to threshold degrees
@@ -201,8 +203,8 @@ static float pid_targetHeading = NAN;
 static uint8_t serial_rxBuffer[32] = {};
 static uint8_t wlser_rxBuffer[32] = {};
 
-static char command_rxBuffer[256] = {};
-static size_t command_rxBufferSize = 0;
+static char command_buffer[256] = {};
+static size_t command_bufferIndex = 0;
 static bool command_ready = false;
 
 static BMP280_HandleTypedef bmp280;
@@ -282,8 +284,12 @@ static void DelayPrecise(uint32_t delay) {
 }
 
 static void command_handle() {
-  char *command = command_rxBuffer;
-  size_t len = command_rxBufferSize;
+  char *command = command_buffer;
+  size_t len = command_bufferIndex;
+
+  command_ready = false;
+  command_bufferIndex = 0;
+
   if (len >= 4 && strprei(command, "stop")) {
     // stop
     command += 4;
@@ -305,6 +311,7 @@ static void command_handle() {
     while (HAL_UART_Transmit(&WLSER_UART, (uint8_t *)msg, len, 250) == HAL_BUSY);
 
     Error_Handler();
+    return;
   } else if (len >= 3 && strprei(command, "set")) {
     // set
     command += 3;
@@ -340,7 +347,13 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &pid_y_proportionalGain);
+
+          if (sscanf(command, "%f", &pid_y_proportionalGain) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         } else if (len >= 1 && strprei(command, "i")) {
           // set pid y i
           command += 1;
@@ -349,7 +362,13 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &pid_y_integralGain);
+
+          if (sscanf(command, "%f", &pid_y_integralGain) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         } else if (len >= 1 && strprei(command, "d")) {
           // set pid y d
           command += 1;
@@ -358,7 +377,13 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &pid_y_derivativeGain);
+
+          if (sscanf(command, "%f", &pid_y_derivativeGain) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         } else if (len >= 3 && strprei(command, "cel")) {
           // set pid y cel
           command += 3;
@@ -367,7 +392,13 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &pid_y_cumulativeErrorLimit);
+
+          if (sscanf(command, "%f", &pid_y_cumulativeErrorLimit) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         } else if (len >= 3 && strprei(command, "iat")) {
           // set pid y iat
           command += 3;
@@ -376,7 +407,13 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &pid_y_integratorActiveThreshold);
+
+          if (sscanf(command, "%f", &pid_y_integratorActiveThreshold) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         }
       } else if (len >= 2 && strprei(command, "pr")) {
         // set pid pr
@@ -395,7 +432,13 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &pid_pr_proportionalGain);
+
+          if (sscanf(command, "%f", &pid_pr_proportionalGain) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         } else if (len >= 1 && strprei(command, "i")) {
           // set pid pr i
           command += 1;
@@ -404,7 +447,13 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &pid_pr_integralGain);
+
+          if (sscanf(command, "%f", &pid_pr_integralGain) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         } else if (len >= 1 && strprei(command, "d")) {
           // set pid pr d
           command += 1;
@@ -413,7 +462,13 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &pid_pr_derivativeGain);
+
+          if (sscanf(command, "%f", &pid_pr_derivativeGain) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         } else if (len >= 3 && strprei(command, "cel")) {
           // set pid cel
           command += 3;
@@ -422,7 +477,13 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &pid_pr_cumulativeErrorLimit);
+
+          if (sscanf(command, "%f", &pid_pr_cumulativeErrorLimit) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         } else if (len >= 3 && strprei(command, "iat")) {
           // set pid iat
           command += 3;
@@ -431,7 +492,13 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &pid_pr_integratorActiveThreshold);
+
+          if (sscanf(command, "%f", &pid_pr_integratorActiveThreshold) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         }
       } else if (len >= 3 && strprei(command, "mli")) {
         // set pid mli
@@ -441,7 +508,13 @@ static void command_handle() {
           command++;
           len--;
         }
-        sscanf(command, "%" PRIdFAST32, &pid_minLoopPeriod);
+
+        if (sscanf(command, "%" PRIdFAST32, &pid_minLoopPeriod) == 1) {
+          strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+        } else {
+          strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+        }
+        return;
       }
     } else if (len >= 4 && strprei(command, "trim")) {
       // set trim
@@ -460,7 +533,13 @@ static void command_handle() {
           command++;
           len--;
         }
-        sscanf(command, "%f", &imu_trimHeading);
+
+        if (sscanf(command, "%f", &imu_trimHeading) == 1) {
+          strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+        } else {
+          strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+        }
+        return;
       } else if (len >= 1 && strprei(command, "p")) {
         // set trim p
         command += 1;
@@ -469,7 +548,13 @@ static void command_handle() {
           command++;
           len--;
         }
-        sscanf(command, "%f", &imu_trimPitch);
+
+        if (sscanf(command, "%f", &imu_trimPitch) == 1) {
+          strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+        } else {
+          strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+        }
+        return;
       } else if (len >= 1 && strprei(command, "r")) {
         // set trim r
         command += 1;
@@ -478,7 +563,13 @@ static void command_handle() {
           command++;
           len--;
         }
-        sscanf(command, "%f", &imu_trimRoll);
+
+        if (sscanf(command, "%f", &imu_trimRoll) == 1) {
+          strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+        } else {
+          strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+        }
+        return;
       }
     } else if (len >= 5 && strprei(command, "radio")) {
       // set radio
@@ -497,7 +588,13 @@ static void command_handle() {
           command++;
           len--;
         }
-        sscanf(command, "%" PRIdFAST16, &radio_deadZone);
+
+        if (sscanf(command, "%" PRIdFAST16, &radio_deadZone) == 1) {
+          strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+        } else {
+          strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+        }
+        return;
       }
     } else if (len >= 7 && strprei(command, "control")) {
       // set control
@@ -516,7 +613,13 @@ static void command_handle() {
           command++;
           len--;
         }
-        sscanf(command, "%f", &control_yawAngleRate);
+
+        if (sscanf(command, "%f", &control_yawAngleRate) == 1) {
+          strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+        } else {
+          strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+        }
+        return;
       }
     } else if (len >= 9 && strprei(command, "telemetry")) {
       // set telemetry
@@ -535,7 +638,13 @@ static void command_handle() {
           command++;
           len--;
         }
-        sscanf(command, "%" PRIdFAST32, &telemetry_interval);
+
+        if (sscanf(command, "%" PRIdFAST32, &telemetry_interval) == 1) {
+          strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+        } else {
+          strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+        }
+        return;
       }
     } else if (len >= 3 && strprei(command, "imu")) {
       // set imu
@@ -563,7 +672,13 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &imu_yawRateFilteringAlpha);
+
+          if (sscanf(command, "%f", &imu_yawRateFilteringAlpha) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         } else if (len >= 2 && strprei(command, "pr")) {
           // set imu lpfa pr
           command += 2;
@@ -572,7 +687,13 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &imu_pitchRateFilteringAlpha);
+
+          if (sscanf(command, "%f", &imu_pitchRateFilteringAlpha) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         } else if (len >= 2 && strprei(command, "rr")) {
           // set imu lpfa rr
           command += 2;
@@ -581,15 +702,19 @@ static void command_handle() {
             command++;
             len--;
           }
-          sscanf(command, "%f", &imu_rollRateFilteringAlpha);
+
+          if (sscanf(command, "%f", &imu_rollRateFilteringAlpha) == 1) {
+            strcpy(command_buffer, "\x1B[32mOK\x1B[0m");
+          } else {
+            strcpy(command_buffer, "\x1B[31mInvalid\x1B[0m");
+          }
+          return;
         }
       }
     }
   }
 
-  command_ready = false;
-  command_rxBufferSize = 0;
-  command_rxBuffer[0] = 0x00;
+  strcpy(command_buffer, "\x1B[33mUnknown\x1B[0m");
 }
 
 /* USER CODE END 0 */
@@ -678,24 +803,30 @@ int main(void) {
     HAL_Delay(100);
     retry++;
   }
+
+#ifdef WAIT_FOR_CALIBRATION
   bool calibrationStateValid;
   bno055_calibration_state_t calibrationState;
-  Serial_Transmitln_DMA("Waiting for IMU self-calibration");
+  int_fast8_t i = 0;
+  Serial_Transmitln_DMA("Waiting for IMU calibration...\r\n");
   do {
     calibrationStateValid = bno055_getCalibrationState(&calibrationState);
     Serial_Transmitf_DMA(
-        "System: %d, Gyroscope: %d, Accelerometer: %d, Magnetometer: %d\r\n",
+        "\x1b[1F%c > System: %d, Gyroscope: %d, Accelerometer: %d, Magnetometer: %d\r\n",
+        "|/-\\|/-\\"[i % 8],
         calibrationState.sys,
         calibrationState.gyro,
         calibrationState.accel,
         calibrationState.mag
     );
+    i++;
     HAL_GPIO_TogglePin(LED_Blue_GPIO_Port, LED_Blue_Pin);
     HAL_Delay(500);
   } while (!calibrationStateValid || calibrationState.sys != 0x03 || calibrationState.gyro != 0x03 ||
            calibrationState.mag != 0x03);
 
   HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_SET);
+#endif  // WAIT_FOR_CALIBRATION
 
   retry = 0;
 
@@ -739,7 +870,7 @@ int main(void) {
       "#           Starting flight control...           #\r\n"
       "#                                                #\r\n"
       "#                                                #\r\n"
-      "##################################################\r\n\n\n"
+      "##################################################\r\n\n\n\n"
   );
 
   HAL_Delay(250);
@@ -865,6 +996,8 @@ int main(void) {
     }
 
     if (faDisabled) {
+      pid_targetHeading = NAN;
+
       pid_cumulativeYawError = 0.f;
       pid_cumulativePitchError = 0.f;
       pid_cumulativeRollError = 0.f;
@@ -880,6 +1013,8 @@ int main(void) {
       motor3Power_FR = basePower + yawCorrection + pitchCorrection - rollCorrection;
       motor4Power_RL = basePower + yawCorrection - pitchCorrection + rollCorrection;
     } else if (!orientationDataValid) {
+      pid_targetHeading = NAN;
+
       float basePower = altCommand / 1000.f;
 
       motor1Power_FL = basePower;
@@ -887,6 +1022,8 @@ int main(void) {
       motor3Power_FR = basePower;
       motor4Power_RL = basePower;
     } else if (altCommand == 0) {
+      pid_targetHeading = NAN;
+
       motor1Power_FL = 0.f;
       motor2Power_RR = 0.f;
       motor3Power_FR = 0.f;
@@ -933,7 +1070,7 @@ int main(void) {
 
       cosineLossCorrection = clamp(1.f / (cosf(roll / 180.f * M_PI) * cosf(pitch / 180.f * M_PI)), 1.f, 1.25f);
       if (isnanf(cosineLossCorrection) || isinff(cosineLossCorrection)) { cosineLossCorrection = 1.f; }
-      // cosineLossCorrection = 1.f;
+      // cosineLossCorrection = 1.f;  // Uncomment to disable cosine loss correction
 
       motor1Power_FL = basePower * cosineLossCorrection - yawCorrection + pitchCorrection + rollCorrection;
       motor2Power_RR = basePower * cosineLossCorrection - yawCorrection - pitchCorrection - rollCorrection;
@@ -989,6 +1126,7 @@ int main(void) {
           " Pitch/Roll : %7.4fP %7.4fI %7.4fD\x1B[0K\r\n"
           "Orientation : %7.2fH %7.2fP %7.2fR\x1B[0K\r\n"
           "Angular vel.: %7.3fY %7.3fP %7.3fR\x1B[0K\r\n"
+          "Target      : %7.2fH %7.2fP %7.2fR\x1B[0K\r\n"
           "Errors      : %7.4fY %7.4fP %7.4fR\x1B[0K\r\n"
           "Cumu. Err.  : %7.4fY %7.4fP %7.4fR\x1B[0K\r\n"
           "Correct Yaw : %7.4fP %7.4fI %7.4fD\x1B[0K\r\n"
@@ -1022,6 +1160,9 @@ int main(void) {
           yawRate,
           pitchRate,
           rollRate,
+          targetHeading,
+          targetPitch,
+          targetRoll,
           yawError,
           pitchError,
           rollError,
@@ -1048,7 +1189,7 @@ int main(void) {
           batt_mavgValue * BATT_VOLTAGE_MULTIPLIER / 4095.f,
           telemetry_mavgProcTime / 1000.f,
           "|/-\\|/-\\"[telemetry_iterationCount % 8],
-          command_rxBuffer
+          command_buffer
       );
 
       telemetry_lastTransmission_us = currentTick_us;
@@ -1673,11 +1814,11 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
     for (uint_fast16_t i = 0; i < size; i++) {
       char c = serial_rxBuffer[i];
       if (c >= 0x20 && c <= 0x7E) {
-        command_rxBuffer[command_rxBufferSize++] = c;
-        command_rxBuffer[command_rxBufferSize] = 0x00;
-      } else if ((c == 0x08 || c == 0x7F) && command_rxBufferSize > 0) {  // Backspace, DEL
-        command_rxBuffer[--command_rxBufferSize] = 0x00;
-      } else if (c == 0x0A || c == 0x0D) {  // LF
+        command_buffer[command_bufferIndex++] = c;
+        command_buffer[command_bufferIndex] = 0x00;
+      } else if ((c == 0x08 || c == 0x7F) && command_bufferIndex > 0) {  // Backspace, DEL
+        command_buffer[--command_bufferIndex] = 0x00;
+      } else if ((c == 0x0A || c == 0x0D) && command_bufferIndex > 0) {  // LF
         command_ready = true;
       }
     }
@@ -1686,11 +1827,11 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
     for (uint_fast16_t i = 0; i < size; i++) {
       char c = wlser_rxBuffer[i];
       if (c >= 0x20 && c <= 0x7E) {
-        command_rxBuffer[command_rxBufferSize++] = c;
-        command_rxBuffer[command_rxBufferSize] = 0x00;
-      } else if ((c == 0x08 || c == 0x7F) && command_rxBufferSize > 0) {  // Backspace, DEL
-        command_rxBuffer[--command_rxBufferSize] = 0x00;
-      } else if (c == 0x0A || c == 0x0D) {  // LF
+        command_buffer[command_bufferIndex++] = c;
+        command_buffer[command_bufferIndex] = 0x00;
+      } else if ((c == 0x08 || c == 0x7F) && command_bufferIndex > 0) {  // Backspace, DEL
+        command_buffer[--command_bufferIndex] = 0x00;
+      } else if ((c == 0x0A || c == 0x0D) && command_bufferIndex > 0) {  // LF
         command_ready = true;
       }
     }
