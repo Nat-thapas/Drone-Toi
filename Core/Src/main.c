@@ -73,7 +73,7 @@
 #define BATT_SENSOR_ADC hadc1
 #define BATT_VOLTAGE_MULTIPLIER 19.375f
 
-#define INTERRUPT_DEBOUNCE 250
+#define EXTI_DEBOUNCE 250
 
 /* USER CODE END PD */
 
@@ -1848,7 +1848,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   int_fast32_t tick = HAL_GetTick();
-  if (GPIO_Pin == GPIO_PIN_13 && tick - interrupts_lastTriggers[13] > INTERRUPT_DEBOUNCE) {
+  if (GPIO_Pin == GPIO_PIN_13 && tick - interrupts_lastTriggers[13] > EXTI_DEBOUNCE) {
     override_outputDisabled = !override_outputDisabled;
     HAL_GPIO_WritePin(LED_Red_GPIO_Port, LED_Red_Pin, override_outputDisabled);
     interrupts_lastTriggers[13] = tick;
