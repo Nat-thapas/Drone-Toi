@@ -19,8 +19,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
-#include <stdint.h>
-
 #include "string.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -65,7 +63,7 @@
 // After threshold error 1 byte will be skipped to try to align incoming data
 #define RADIO_CONSECUTIVE_ERROR_THRESHOLD 3
 
-#define I2C_PERIPHERAL_INIT_RETRY_LIMIT 5
+#define I2C_PERIPHERAL_INIT_RETRY_LIMIT 10
 
 #define MOTOR_1_FL_PWM_CCR htim3.Instance->CCR4
 #define MOTOR_2_RR_PWM_CCR htim3.Instance->CCR1
@@ -169,8 +167,8 @@ static const float radio_targetAngleLimits[3] = {5.f, 10.f, 30.f};
 static float control_yawAngleRate = 3.f;  // 3 * angleLimit degrees / sec at max input
 
 static float imu_trimHeading = 0.f;
-static float imu_trimPitch = 1.5f;
-static float imu_trimRoll = -1.25f;
+static float imu_trimPitch = 4.5f;
+static float imu_trimRoll = -0.5f;
 // Lower value = lower frequency cutoff, the filtering algorithm is exponetially weighted moving average
 static float imu_yawRateFilteringAlpha = 0.125f;
 static float imu_pitchRateFilteringAlpha = 0.25f;
@@ -185,8 +183,8 @@ static float pid_y_derivativeGain = 0.2f;
 static float pid_y_cumulativeErrorLimit = 1.5f;
 
 static float pid_pr_proportionalGain = 0.15f;
-static float pid_pr_integralGain = 0.25f;
-static float pid_pr_derivativeGain = 0.125f;
+static float pid_pr_integralGain = 0.2f;
+static float pid_pr_derivativeGain = 0.1f;
 static float pid_pr_cumulativeErrorLimit = 1.5f;
 
 // Integrator will only be active if current error is less than or equal to threshold degrees
@@ -304,7 +302,7 @@ static void command_handle() {
     MOTOR_3_FR_PWM_CCR = 4000;
     MOTOR_4_RL_PWM_CCR = 4000;
 
-    char msg[] = "E-STOP Activated, shutting down...\r\n";
+    char msg[] = "\r\nE-STOP Activated, shutting down...\r\n";
     size_t len = strlen(msg);
 
     while (HAL_UART_Transmit(&SERIAL_UART, (uint8_t *)msg, len, 250) == HAL_BUSY);
@@ -778,7 +776,28 @@ int main(void) {
   HAL_TIM_PWM_Start(&MOTORS_PWM_TIM, TIM_CHANNEL_4);
   HAL_ADC_Start_DMA(&BATT_SENSOR_ADC, &batt_adcRawValue, 1);
 
+  Serial_Transmit_DMA(
+      "##################################################\r\n"
+      "#                                                #\r\n"
+      "#                                                #\r\n"
+      "#   ____                           _____     _   #\r\n"
+      "#  |  _ \\ _ __ ___  _ __   ___    |_   _|__ (_)  #\r\n"
+      "#  | | | | '__/ _ \\| '_ \\ / _ \\_____| |/ _ \\| |  #\r\n"
+      "#  | |_| | | | (_) | | | |  __/_____| | (_) | |  #\r\n"
+      "#  |____/|_|  \\___/|_| |_|\\___|     |_|\\___/|_|  #\r\n"
+      "#                                                #\r\n"
+      "#                                                #\r\n"
+      "#                    Welcome                     #\r\n"
+      "#                                                #\r\n"
+      "#             Initializing systems...            #\r\n"
+      "#                                                #\r\n"
+      "#                                                #\r\n"
+      "##################################################\r\n"
+  );
   HAL_Delay(250);
+
+  Serial_Transmitln_DMA("Initializing BNO055 Inertial Measurement Unit...");
+  HAL_Delay(100);
 
   int_fast8_t retry = 0;
 
@@ -828,6 +847,12 @@ int main(void) {
   HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_SET);
 #endif  // WAIT_FOR_CALIBRATION
 
+  Serial_Transmitln_DMA("BNO055 Inertial Measurement Unit initialization complete");
+  HAL_Delay(100);
+
+  Serial_Transmitln_DMA("Initializing BMP280 Barometer...");
+  HAL_Delay(100);
+
   retry = 0;
 
   bmp280_init_default_params(&bmp280.params);
@@ -841,39 +866,21 @@ int main(void) {
 
   while (!bmp280_init(&bmp280, &bmp280.params)) {
     if (retry >= I2C_PERIPHERAL_INIT_RETRY_LIMIT) {
-      Serial_Transmitln_DMA("Failed to initialize BMP280 Altimeter. Entering error state...");
+      Serial_Transmitln_DMA("Failed to initialize BMP280 Barometer. Entering error state...");
       Error_Handler();
     }
-    Serial_Transmitln_DMA("Failed to initialize BMP280 Altimeter, retrying...");
+    Serial_Transmitln_DMA("Failed to initialize BMP280 Barometer, retrying...");
     HAL_Delay(100);
     retry++;
   }
 
-  HAL_GPIO_WritePin(LED_Green_GPIO_Port, LED_Green_Pin, GPIO_PIN_RESET);
+  Serial_Transmitln_DMA("BMP280 Barometer initialization complete");
+  HAL_Delay(100);
+
   HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_RESET);
 
-  HAL_Delay(250);
-
-  Serial_Transmit_DMA(
-      "##################################################\r\n"
-      "#                                                #\r\n"
-      "#                                                #\r\n"
-      "#   ____                           _____     _   #\r\n"
-      "#  |  _ \\ _ __ ___  _ __   ___    |_   _|__ (_)  #\r\n"
-      "#  | | | | '__/ _ \\| '_ \\ / _ \\_____| |/ _ \\| |  #\r\n"
-      "#  | |_| | | | (_) | | | |  __/_____| | (_) | |  #\r\n"
-      "#  |____/|_|  \\___/|_| |_|\\___|     |_|\\___/|_|  #\r\n"
-      "#                                                #\r\n"
-      "#                                                #\r\n"
-      "#            Initialization Complete             #\r\n"
-      "#                                                #\r\n"
-      "#           Starting flight control...           #\r\n"
-      "#                                                #\r\n"
-      "#                                                #\r\n"
-      "##################################################\r\n\n\n\n"
-  );
-
-  HAL_Delay(250);
+  Serial_Transmit_DMA("\r\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
+  HAL_Delay(100);
 
   /* USER CODE END 2 */
 
