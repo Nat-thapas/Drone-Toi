@@ -850,7 +850,7 @@ int main(void) {
   Serial_Transmitln_DMA("BNO055 Inertial Measurement Unit initialization complete");
   HAL_Delay(100);
 
-  Serial_Transmitln_DMA("Initializing BMP280 Barometer...");
+  Serial_Transmitln_DMA("Initializing BMP280 Altimeter...");
   HAL_Delay(100);
 
   retry = 0;
@@ -866,15 +866,15 @@ int main(void) {
 
   while (!bmp280_init(&bmp280, &bmp280.params)) {
     if (retry >= I2C_PERIPHERAL_INIT_RETRY_LIMIT) {
-      Serial_Transmitln_DMA("Failed to initialize BMP280 Barometer. Entering error state...");
+      Serial_Transmitln_DMA("Failed to initialize BMP280 Altimeter. Entering error state...");
       Error_Handler();
     }
-    Serial_Transmitln_DMA("Failed to initialize BMP280 Barometer, retrying...");
+    Serial_Transmitln_DMA("Failed to initialize BMP280 Altimeter, retrying...");
     HAL_Delay(100);
     retry++;
   }
 
-  Serial_Transmitln_DMA("BMP280 Barometer initialization complete");
+  Serial_Transmitln_DMA("BMP280 Altimeter initialization complete");
   HAL_Delay(100);
 
   HAL_GPIO_WritePin(LED_Blue_GPIO_Port, LED_Blue_Pin, GPIO_PIN_RESET);
