@@ -179,7 +179,7 @@ static int_fast32_t pid_lastLoopTime_us = 0;
 
 static float pid_y_proportionalGain = 0.25f;
 static float pid_y_integralGain = 0.3f;
-static float pid_y_derivativeGain = 0.2f;
+static float pid_y_derivativeGain = 0.15f;
 static float pid_y_cumulativeErrorLimit = 1.5f;
 
 static float pid_pr_proportionalGain = 0.15f;

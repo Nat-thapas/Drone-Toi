@@ -12,6 +12,11 @@
     "limits": "c",
     "typeinfo": "c"
   },
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "stm32cube-ide-clangd.enable": true,
+  "cmake.environment": {
+    "PATH": "c:/Users/natha/.vscode/extensions/stmicroelectronics.stm32cube-ide-build-cmake-1.42.2/resources/cube-cmake/win32;c:\\Users\\natha\\.vscode\\extensions\\stmicroelectronics.stm32cube-ide-core-1.0.3\\resources\\binaries\\win32\\x86_64;${env.PATH}"
+  },
   "cmake.cmakePath": "cube-cmake",
   "cmake.configureArgs": ["-DCMAKE_COMMAND=cube-cmake"],
   "cmake.preferredGenerators": ["Ninja"],
