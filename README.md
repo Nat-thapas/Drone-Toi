@@ -2,6 +2,8 @@
 
 A 12-inch STM32 based drone with custom from the ground up flight control.
 
+Demo video: [https://www.youtube.com/watch?v=6vJ5gsYP690](https://www.youtube.com/watch?v=6vJ5gsYP690)
+
 ## Controls
 
 Control is handled by FS-I6X transmitter and FS-IA6B radio receiver. The STM32 flight controller receive data from the radio receiver via the i-BUS protocol (UART 8N1 115200 bps). Each channel is bound to the following:
@@ -60,3 +62,4 @@ Commands are comprised of space separated keywords in their respective order and
 | SET      | IMU       | LPFA     | RR         | float     | Set IMU roll rate low-pass filter alpha value                                        |
 
 Values set via command are NOT persisted to flash memory and will be lost upon restart.
+
